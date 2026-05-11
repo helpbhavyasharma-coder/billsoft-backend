@@ -24,8 +24,12 @@ router.get('/invoice/:id', async (req, res) => {
 
     const pdfBuffer = await generatePDF(companies[0], invoices[0], items, parties[0]);
 
+    const cleanInvoiceNo = invoices[0].invoice_no.replace(/\//g, ' ');
+    const cleanPartyName = (parties[0]?.name || '').replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    const fileName = `${cleanInvoiceNo} ${cleanPartyName}.pdf`;
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="Invoice_${invoices[0].invoice_no.replace(/\//g, '-')}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.send(pdfBuffer);
   } catch (err) {
     console.error('PDF generation error:', err);
