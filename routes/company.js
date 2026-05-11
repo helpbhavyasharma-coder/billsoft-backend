@@ -6,21 +6,12 @@ const fs = require('fs');
 const { query } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads/logos');
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `logo_${req.user.id}_${Date.now()}${ext}`);
-  },
-});
+// Use memory storage - file goes to Cloudinary, not disk
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
   fileFilter: (req, file, cb) => {
     const allowed = /jpeg|jpg|png|gif|webp/;
     if (allowed.test(path.extname(file.originalname).toLowerCase())) cb(null, true);
@@ -53,17 +44,38 @@ router.post('/', authenticate, upload.single('logo'), async (req, res) => {
     }
 
     let logo_url = null;
-    if (req.file) logo_url = `/uploads/logos/${req.file.filename}`;
+
+    // Upload to Cloudinary if file provided
+    if (req.file) {
+      try {
+        const isCloudinaryConfigured = process.env.CLOUDINARY_CLOUD_NAME &&
+          process.env.CLOUDINARY_API_KEY &&
+          process.env.CLOUDINARY_API_SECRET;
+
+        if (isCloudinaryConfigured) {
+          const { uploadToCloudinary } = require('../config/cloudinary');
+          const fileName = `logo_${req.user.id}_${Date.now()}`;
+          const result = await uploadToCloudinary(req.file.buffer, fileName);
+          logo_url = result.secure_url;
+        } else {
+          // Fallback: save locally (for local dev)
+          const uploadDir = path.join(__dirname, '../uploads/logos');
+          if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+          const ext = path.extname(req.file.originalname);
+          const filename = `logo_${req.user.id}_${Date.now()}${ext}`;
+          fs.writeFileSync(path.join(uploadDir, filename), req.file.buffer);
+          logo_url = `/uploads/logos/${filename}`;
+        }
+      } catch (uploadErr) {
+        console.error('Logo upload error:', uploadErr.message);
+        // Continue without logo if upload fails
+      }
+    }
 
     const [existing] = await query('SELECT id, logo_url FROM companies WHERE user_id = ?', [req.user.id]);
 
     if (existing.length > 0) {
       // Update
-      if (logo_url && existing[0].logo_url) {
-        const oldPath = path.join(__dirname, '..', existing[0].logo_url);
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-      }
-
       const logoField = logo_url ? ', logo_url = ?' : '';
       const params = [
         company_name, address || '', city || '', state || '', pincode || '',
