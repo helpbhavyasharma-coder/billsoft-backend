@@ -143,6 +143,11 @@ if (isProduction) {
     pgSql = pgSql.replace(/datetime\('now'\)/g, 'NOW()');
     pgSql = pgSql.replace(/strftime\('%m',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'MM')`);
     pgSql = pgSql.replace(/strftime\('%Y',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'YYYY')`);
+    // SQLite boolean to PostgreSQL
+    pgSql = pgSql.replace(/is_active\s*=\s*1/g, 'is_active = TRUE');
+    pgSql = pgSql.replace(/is_active\s*=\s*0/g, 'is_active = FALSE');
+    pgSql = pgSql.replace(/SET is_active = TRUE/g, 'SET is_active = TRUE');
+    pgSql = pgSql.replace(/SET is_active = FALSE/g, 'SET is_active = FALSE');
 
     // Auto-add RETURNING id for INSERT statements
     const upper = pgSql.trim().toUpperCase();
@@ -169,6 +174,8 @@ if (isProduction) {
         pgSql = pgSql.replace(/datetime\('now'\)/g, 'NOW()');
         pgSql = pgSql.replace(/strftime\('%m',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'MM')`);
         pgSql = pgSql.replace(/strftime\('%Y',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'YYYY')`);
+        pgSql = pgSql.replace(/is_active\s*=\s*1/g, 'is_active = TRUE');
+        pgSql = pgSql.replace(/is_active\s*=\s*0/g, 'is_active = FALSE');
 
         const upper = pgSql.trim().toUpperCase();
         if (upper.startsWith('INSERT') && !upper.includes('RETURNING')) {
