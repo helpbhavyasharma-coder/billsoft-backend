@@ -1,0 +1,42 @@
+const jwt = require('jsonwebtoken');
+const { query } = require('../config/db');
+
+const authenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const [rows] = await query('SELECT id, email FROM users WHERE id = ?', [decoded.userId]);
+    if (rows.length === 0) {
+      return res.status(401).json({ success: false, message: 'User not found.' });
+    }
+
+    req.user = { id: decoded.userId, email: rows[0].email };
+    next();
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ success: false, message: 'Token expired. Please login again.' });
+    }
+    return res.status(401).json({ success: false, message: 'Invalid token.' });
+  }
+};
+
+const attachCompany = async (req, res, next) => {
+  try {
+    const [rows] = await query('SELECT id FROM companies WHERE user_id = ?', [req.user.id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Company profile not found. Please complete setup.' });
+    }
+    req.companyId = rows[0].id;
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { authenticate, attachCompany };
