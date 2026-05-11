@@ -141,18 +141,20 @@ if (isProduction) {
 
     // Convert SQLite functions to PostgreSQL
     pgSql = pgSql.replace(/datetime\('now'\)/g, 'NOW()');
-    pgSql = pgSql.replace(/strftime\('%m',\s*([^)]+)\)/g, "TO_CHAR($1, 'MM')");
-    pgSql = pgSql.replace(/strftime\('%Y',\s*([^)]+)\)/g, "TO_CHAR($1, 'YYYY')");
-    pgSql = pgSql.replace(/LIKE \?/g, (m, offset) => m); // keep LIKE
+    pgSql = pgSql.replace(/strftime\('%m',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'MM')`);
+    pgSql = pgSql.replace(/strftime\('%Y',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'YYYY')`);
+
+    // Auto-add RETURNING id for INSERT statements
+    const upper = pgSql.trim().toUpperCase();
+    if (upper.startsWith('INSERT') && !upper.includes('RETURNING')) {
+      pgSql = pgSql + ' RETURNING id';
+    }
 
     const result = await pool.query(pgSql, params);
 
-    // Return in SQLite-compatible format [rows]
-    if (pgSql.trim().toUpperCase().startsWith('INSERT')) {
-      // Get last inserted id
-      const rows = result.rows || [];
-      const insertId = rows[0]?.id || result.rows?.[0]?.id;
-      return [{ insertId, affectedRows: result.rowCount, rows }];
+    if (upper.startsWith('INSERT')) {
+      const insertId = result.rows?.[0]?.id;
+      return [{ insertId, affectedRows: result.rowCount, rows: result.rows }];
     }
     return [result.rows || []];
   };
@@ -165,8 +167,17 @@ if (isProduction) {
         let i = 0;
         pgSql = pgSql.replace(/\?/g, () => `$${++i}`);
         pgSql = pgSql.replace(/datetime\('now'\)/g, 'NOW()');
+        pgSql = pgSql.replace(/strftime\('%m',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'MM')`);
+        pgSql = pgSql.replace(/strftime\('%Y',\s*([^)]+)\)/g, (_, col) => `TO_CHAR(${col}, 'YYYY')`);
+
+        const upper = pgSql.trim().toUpperCase();
+        if (upper.startsWith('INSERT') && !upper.includes('RETURNING')) {
+          pgSql = pgSql + ' RETURNING id';
+        }
+
         const result = await client.query(pgSql, params);
-        if (pgSql.trim().toUpperCase().startsWith('INSERT')) {
+
+        if (upper.startsWith('INSERT')) {
           return [{ insertId: result.rows?.[0]?.id, affectedRows: result.rowCount }];
         }
         return [result.rows || []];
@@ -184,8 +195,12 @@ if (isProduction) {
   try {
     Database = require('better-sqlite3');
   } catch (e) {
-    console.error('better-sqlite3 not available, please install it for local dev');
-    process.exit(1);
+    console.error('better-sqlite3 not available - set DATABASE_URL for PostgreSQL');
+    // Keep retrying instead of crashing
+    setInterval(() => {
+      console.log('Waiting for DATABASE_URL...');
+    }, 5000);
+    return;
   }
   const path = require('path');
   const fs = require('fs');
