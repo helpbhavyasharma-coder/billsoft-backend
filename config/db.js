@@ -1,9 +1,9 @@
 // Auto-detect: PostgreSQL (production/Railway) or SQLite (local development)
-const isProduction = process.env.DATABASE_URL || process.env.NODE_ENV === 'production';
+const isProduction = !!(process.env.DATABASE_URL);
 
 let query, getConnection;
 
-if (isProduction && process.env.DATABASE_URL) {
+if (isProduction) {
   // ── PostgreSQL (Railway / Production) ──
   const { Pool } = require('pg');
 
@@ -180,7 +180,13 @@ if (isProduction && process.env.DATABASE_URL) {
 
 } else {
   // ── SQLite (Local Development) ──
-  const Database = require('better-sqlite3');
+  let Database;
+  try {
+    Database = require('better-sqlite3');
+  } catch (e) {
+    console.error('better-sqlite3 not available, please install it for local dev');
+    process.exit(1);
+  }
   const path = require('path');
   const fs = require('fs');
 

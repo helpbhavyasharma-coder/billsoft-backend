@@ -58,9 +58,33 @@ router.get('/next-number', async (req, res) => {
     );
     if (company.length === 0) return res.status(404).json({ success: false, message: 'Company not found.' });
 
-    const { invoice_prefix, invoice_counter, financial_year } = company[0];
-    const invoiceNo = `${invoice_prefix}/${financial_year}/${String(invoice_counter).padStart(3, '0')}`;
-    res.json({ success: true, invoice_no: invoiceNo, counter: invoice_counter });
+    const { invoice_prefix, financial_year } = company[0];
+
+    // Find the highest invoice number actually used
+    const [lastInvoice] = await query(
+      `SELECT invoice_no FROM invoices 
+       WHERE company_id = ? AND status != 'cancelled'
+       ORDER BY id DESC LIMIT 1`,
+      [req.companyId]
+    );
+
+    let nextCounter = 1;
+
+    if (lastInvoice.length > 0) {
+      const lastNo = lastInvoice[0].invoice_no;
+      // Extract number from end: BY/26-27/010 → 10
+      const parts = lastNo.split('/');
+      const lastNum = parseInt(parts[parts.length - 1]);
+      if (!isNaN(lastNum)) {
+        nextCounter = lastNum + 1;
+      }
+    }
+
+    // Also check company counter and take max
+    nextCounter = Math.max(nextCounter, company[0].invoice_counter);
+
+    const invoiceNo = `${invoice_prefix}/${financial_year}/${String(nextCounter).padStart(3, '0')}`;
+    res.json({ success: true, invoice_no: invoiceNo, counter: nextCounter });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error.' });
   }
@@ -95,7 +119,7 @@ router.get('/', async (req, res) => {
     const [countResult] = await query(countSql, params);
     const total = countResult[0].total;
 
-    sql += ' ORDER BY i.invoice_date DESC, i.id DESC';
+    sql += ' ORDER BY CAST(SUBSTR(i.invoice_no, LENGTH(i.invoice_no) - 2) AS INTEGER) DESC, i.id DESC';
     const offset = (parseInt(page) - 1) * parseInt(limit);
     sql += ` LIMIT ${parseInt(limit)} OFFSET ${offset}`;
 
@@ -255,10 +279,14 @@ router.post('/', async (req, res) => {
       );
     }
 
-    await conn.query(
-      'UPDATE companies SET invoice_counter = invoice_counter + 1 WHERE id = ?',
-      [req.companyId]
-    );
+    // Update counter to last used number + 1
+    const lastNum = parseInt(finalInvoiceNo.split('/').pop());
+    if (!isNaN(lastNum)) {
+      await conn.query(
+        `UPDATE companies SET invoice_counter = ? WHERE id = ? AND invoice_counter <= ?`,
+        [lastNum + 1, req.companyId, lastNum]
+      );
+    }
 
     await conn.commit();
 
