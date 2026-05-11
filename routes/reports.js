@@ -5,7 +5,13 @@ const { authenticate, attachCompany } = require('../middleware/auth');
 
 router.use(authenticate, attachCompany);
 
-// GET /api/reports/dashboard - Full dashboard stats with charts
+const isPostgres = !!(process.env.DATABASE_URL);
+
+// Helper: date functions for SQLite vs PostgreSQL
+const monthExpr = (col) => isPostgres ? `TO_CHAR(${col}, 'MM')` : `strftime('%m', ${col})`;
+const yearExpr = (col) => isPostgres ? `TO_CHAR(${col}, 'YYYY')` : `strftime('%Y', ${col})`;
+
+// GET /api/reports/dashboard
 router.get('/dashboard', async (req, res) => {
   try {
     const { year } = req.query;
@@ -13,19 +19,18 @@ router.get('/dashboard', async (req, res) => {
 
     // Monthly sales for chart (12 months)
     const [monthlySales] = await query(
-      `SELECT strftime('%m', invoice_date) as month,
+      `SELECT ${monthExpr('invoice_date')} as month,
        COUNT(*) as count,
        COALESCE(SUM(grand_total), 0) as total,
        COALESCE(SUM(total_cgst + total_sgst + total_igst), 0) as tax_total
        FROM invoices
        WHERE company_id = ? AND status != 'cancelled'
-       AND strftime('%Y', invoice_date) = ?
-       GROUP BY strftime('%m', invoice_date)
+       AND ${yearExpr('invoice_date')} = ?
+       GROUP BY ${monthExpr('invoice_date')}
        ORDER BY month ASC`,
       [req.companyId, String(currentYear)]
     );
 
-    // Fill all 12 months
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const monthlyData = months.map((name, idx) => {
       const m = String(idx + 1).padStart(2, '0');
@@ -46,7 +51,7 @@ router.get('/dashboard', async (req, res) => {
        FROM invoices i
        LEFT JOIN parties p ON i.party_id = p.id
        WHERE i.company_id = ? AND i.status != 'cancelled'
-       AND strftime('%Y', i.invoice_date) = ?
+       AND ${yearExpr('i.invoice_date')} = ?
        GROUP BY i.party_id, p.name, p.mobile
        ORDER BY total_business DESC LIMIT 5`,
       [req.companyId, String(currentYear)]
@@ -60,7 +65,7 @@ router.get('/dashboard', async (req, res) => {
        FROM invoice_items ii
        JOIN invoices i ON ii.invoice_id = i.id
        WHERE i.company_id = ? AND i.status != 'cancelled'
-       AND strftime('%Y', i.invoice_date) = ?
+       AND ${yearExpr('i.invoice_date')} = ?
        GROUP BY ii.description
        ORDER BY total_sale DESC LIMIT 5`,
       [req.companyId, String(currentYear)]
@@ -68,13 +73,28 @@ router.get('/dashboard', async (req, res) => {
 
     // Current month stats
     const now = new Date();
-    const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const [thisMonth] = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
-       FROM invoices WHERE company_id = ? AND status != 'cancelled'
-       AND invoice_date LIKE ?`,
-      [req.companyId, `${monthPrefix}%`]
-    );
+    const monthPrefix = isPostgres
+      ? null
+      : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    let thisMonth;
+    if (isPostgres) {
+      const [r] = await query(
+        `SELECT COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
+         FROM invoices WHERE company_id = ? AND status != 'cancelled'
+         AND EXTRACT(MONTH FROM invoice_date) = ? AND EXTRACT(YEAR FROM invoice_date) = ?`,
+        [req.companyId, now.getMonth() + 1, now.getFullYear()]
+      );
+      thisMonth = r;
+    } else {
+      const [r] = await query(
+        `SELECT COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
+         FROM invoices WHERE company_id = ? AND status != 'cancelled'
+         AND invoice_date LIKE ?`,
+        [req.companyId, `${monthPrefix}%`]
+      );
+      thisMonth = r;
+    }
 
     // Outstanding
     const [outstanding] = await query(
@@ -87,7 +107,7 @@ router.get('/dashboard', async (req, res) => {
     const [yearTotal] = await query(
       `SELECT COALESCE(SUM(grand_total), 0) as total, COUNT(*) as count
        FROM invoices WHERE company_id = ? AND status != 'cancelled'
-       AND strftime('%Y', invoice_date) = ?`,
+       AND ${yearExpr('invoice_date')} = ?`,
       [req.companyId, String(currentYear)]
     );
 
@@ -116,7 +136,7 @@ router.get('/dashboard', async (req, res) => {
     });
   } catch (err) {
     console.error('Dashboard report error:', err);
-    res.status(500).json({ success: false, message: 'Server error.' });
+    res.status(500).json({ success: false, message: 'Server error: ' + err.message });
   }
 });
 
@@ -129,7 +149,6 @@ router.get('/party-ledger/:partyId', async (req, res) => {
     );
     if (party.length === 0) return res.status(404).json({ success: false, message: 'Party not found.' });
 
-    // All invoices with their paid amounts
     const [invoices] = await query(
       `SELECT i.*,
        COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = i.id), 0) as paid_amount
@@ -139,7 +158,6 @@ router.get('/party-ledger/:partyId', async (req, res) => {
       [req.params.partyId, req.companyId]
     );
 
-    // All payments for this party with invoice info
     const [allPayments] = await query(
       `SELECT p.*, i.invoice_no
        FROM payments p
@@ -178,11 +196,10 @@ router.get('/gst-summary', async (req, res) => {
     const { month, year } = req.query;
     const currentYear = year || new Date().getFullYear();
     const currentMonth = month || String(new Date().getMonth() + 1).padStart(2, '0');
-    const prefix = `${currentYear}-${String(currentMonth).padStart(2, '0')}`;
 
-    const [summary] = await query(
-      `SELECT
-       COUNT(*) as total_invoices,
+    let summaryQuery, params;
+    if (isPostgres) {
+      summaryQuery = `SELECT COUNT(*) as total_invoices,
        COALESCE(SUM(subtotal), 0) as total_sales,
        COALESCE(SUM(total_discount), 0) as total_discount,
        COALESCE(SUM(taxable_amount), 0) as taxable_amount,
@@ -192,10 +209,26 @@ router.get('/gst-summary', async (req, res) => {
        COALESCE(SUM(total_cgst + total_sgst + total_igst), 0) as total_tax,
        COALESCE(SUM(grand_total), 0) as grand_total
        FROM invoices
-       WHERE company_id = ? AND status != 'cancelled' AND invoice_date LIKE ?`,
-      [req.companyId, `${prefix}%`]
-    );
+       WHERE company_id = ? AND status != 'cancelled'
+       AND EXTRACT(MONTH FROM invoice_date) = ? AND EXTRACT(YEAR FROM invoice_date) = ?`;
+      params = [req.companyId, parseInt(currentMonth), parseInt(currentYear)];
+    } else {
+      const prefix = `${currentYear}-${String(currentMonth).padStart(2, '0')}`;
+      summaryQuery = `SELECT COUNT(*) as total_invoices,
+       COALESCE(SUM(subtotal), 0) as total_sales,
+       COALESCE(SUM(total_discount), 0) as total_discount,
+       COALESCE(SUM(taxable_amount), 0) as taxable_amount,
+       COALESCE(SUM(total_cgst), 0) as total_cgst,
+       COALESCE(SUM(total_sgst), 0) as total_sgst,
+       COALESCE(SUM(total_igst), 0) as total_igst,
+       COALESCE(SUM(total_cgst + total_sgst + total_igst), 0) as total_tax,
+       COALESCE(SUM(grand_total), 0) as grand_total
+       FROM invoices
+       WHERE company_id = ? AND status != 'cancelled' AND invoice_date LIKE ?`;
+      params = [req.companyId, `${prefix}%`];
+    }
 
+    const [summary] = await query(summaryQuery, params);
     res.json({ success: true, summary: summary[0], month: currentMonth, year: currentYear });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error.' });

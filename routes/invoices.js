@@ -60,8 +60,8 @@ router.get('/next-number', async (req, res) => {
 
     const { invoice_prefix, financial_year } = company[0];
 
-    // Find the highest invoice number actually used
-    const [lastInvoice] = await query(
+    // Find highest ACTIVE invoice number
+    const [lastActive] = await query(
       `SELECT invoice_no FROM invoices 
        WHERE company_id = ? AND status != 'cancelled'
        ORDER BY id DESC LIMIT 1`,
@@ -70,17 +70,13 @@ router.get('/next-number', async (req, res) => {
 
     let nextCounter = 1;
 
-    if (lastInvoice.length > 0) {
-      const lastNo = lastInvoice[0].invoice_no;
-      // Extract number from end: BY/26-27/010 → 10
-      const parts = lastNo.split('/');
+    if (lastActive.length > 0) {
+      const parts = lastActive[0].invoice_no.split('/');
       const lastNum = parseInt(parts[parts.length - 1]);
-      if (!isNaN(lastNum)) {
-        nextCounter = lastNum + 1;
-      }
+      if (!isNaN(lastNum)) nextCounter = lastNum + 1;
     }
 
-    // Also check company counter and take max
+    // Take max of counter and calculated
     nextCounter = Math.max(nextCounter, company[0].invoice_counter);
 
     const invoiceNo = `${invoice_prefix}/${financial_year}/${String(nextCounter).padStart(3, '0')}`;
@@ -374,17 +370,39 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/invoices/:id
+// DELETE /api/invoices/:id - Hard delete (cancelled invoices reuse number)
 router.delete('/:id', async (req, res) => {
   try {
     const [existing] = await query(
-      'SELECT id FROM invoices WHERE id = ? AND company_id = ?',
+      'SELECT id, invoice_no FROM invoices WHERE id = ? AND company_id = ?',
       [req.params.id, req.companyId]
     );
     if (existing.length === 0) return res.status(404).json({ success: false, message: 'Invoice not found.' });
 
+    const deletedInvoiceNo = existing[0].invoice_no;
+
+    // Soft delete - mark as cancelled
     await query('UPDATE invoices SET status = ? WHERE id = ?', ['cancelled', req.params.id]);
-    res.json({ success: true, message: 'Invoice cancelled.' });
+
+    // Reset counter if this was the last invoice number
+    const lastNum = parseInt(deletedInvoiceNo.split('/').pop());
+    if (!isNaN(lastNum)) {
+      // Check if any active invoice has this number or higher
+      const [higher] = await query(
+        `SELECT id FROM invoices WHERE company_id = ? AND status != 'cancelled'
+         AND CAST(SUBSTR(invoice_no, LENGTH(invoice_no) - 2) AS INTEGER) >= ?`,
+        [req.companyId, lastNum]
+      );
+      if (higher.length === 0) {
+        // No active invoice with this number - reset counter to reuse it
+        await query(
+          'UPDATE companies SET invoice_counter = ? WHERE id = ? AND invoice_counter > ?',
+          [lastNum, req.companyId, lastNum - 1]
+        );
+      }
+    }
+
+    res.json({ success: true, message: 'Invoice deleted.', deleted_no: deletedInvoiceNo });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error.' });
   }

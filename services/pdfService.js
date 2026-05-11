@@ -52,9 +52,40 @@ const formatDate = (dateStr) => {
 };
 
 const generateInvoiceHTML = async (company, invoice, items, party) => {
-  const logoUrl = company.logo_url
-    ? `http://localhost:${process.env.PORT || 5000}${company.logo_url}`
-    : null;
+  // Logo - base64 mein convert karo PDF ke liye
+  let logoSrc = null;
+  if (company.logo_url) {
+    try {
+      if (company.logo_url.startsWith('http')) {
+        const https = require('https');
+        const http = require('http');
+        const protocol = company.logo_url.startsWith('https') ? https : http;
+        logoSrc = await new Promise((resolve, reject) => {
+          protocol.get(company.logo_url, (res) => {
+            const chunks = [];
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => {
+              const buffer = Buffer.concat(chunks);
+              const mime = res.headers['content-type'] || 'image/png';
+              resolve(`data:${mime};base64,${buffer.toString('base64')}`);
+            });
+            res.on('error', reject);
+          }).on('error', reject);
+        });
+      } else {
+        const fs = require('fs');
+        const path = require('path');
+        const localPath = path.join(__dirname, '..', company.logo_url);
+        if (fs.existsSync(localPath)) {
+          const buffer = fs.readFileSync(localPath);
+          const ext = path.extname(localPath).slice(1) || 'png';
+          logoSrc = `data:image/${ext};base64,${buffer.toString('base64')}`;
+        }
+      }
+    } catch (e) {
+      console.error('Logo load error:', e.message);
+    }
+  }
 
   // Generate UPI QR code as base64 image
   let qrDataUrl = null;
@@ -90,8 +121,15 @@ const generateInvoiceHTML = async (company, invoice, items, party) => {
     </tr>
   `).join('');
 
-  // No empty rows - clean invoice
-  const emptyRowsHTML = '';
+  // Minimum 10 rows total - empty rows fill karo
+  const MIN_ROWS = 10;
+  const emptyRowsCount = Math.max(0, MIN_ROWS - items.length);
+  const emptyRowsHTML = Array(emptyRowsCount).fill(`
+    <tr style="height:20px">
+      <td></td><td></td><td></td><td></td><td></td><td></td>
+      <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+    </tr>
+  `).join('');
 
   const terms = (invoice.terms || company.terms || '').split('\n').filter(Boolean);
 
@@ -166,8 +204,8 @@ const generateInvoiceHTML = async (company, invoice, items, party) => {
 
   <!-- Header -->
   <div class="header">
-    ${logoUrl
-      ? `<img src="${logoUrl}" class="logo" alt="Logo" />`
+    ${logoSrc
+      ? `<img src="${logoSrc}" class="logo" alt="Logo" />`
       : `<div class="logo-placeholder">LOGO</div>`
     }
     <div class="company-info">
