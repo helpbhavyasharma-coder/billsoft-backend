@@ -11,11 +11,11 @@ const PORT = process.env.PORT || 5000;
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-// Middleware
+// CORS: echo request Origin when present (needed with credentials + browsers hitting Railway from softbill etc.)
 app.use(cors({
-  origin: function(origin, callback) {
-    // Allow all origins in production (you can restrict later)
-    callback(null, true);
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    callback(null, origin);
   },
   credentials: true,
 }));
