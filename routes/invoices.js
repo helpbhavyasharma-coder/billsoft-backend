@@ -109,7 +109,11 @@ router.get('/', async (req, res) => {
     const params = [req.companyId];
 
     if (search) {
-      sql += ' AND (i.invoice_no LIKE ? OR p.name LIKE ?)';
+      if (isPostgres) {
+        sql += ' AND (i.invoice_no ILIKE ? OR p.name ILIKE ?)';
+      } else {
+        sql += ' AND (i.invoice_no LIKE ? OR p.name LIKE ?)';
+      }
       params.push(`%${search}%`, `%${search}%`);
     }
     if (status) { sql += ' AND i.status = ?'; params.push(status); }

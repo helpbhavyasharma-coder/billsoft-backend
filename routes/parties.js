@@ -13,7 +13,11 @@ router.get('/', async (req, res) => {
     const params = [req.companyId];
 
     if (search) {
-      sql += ' AND (name LIKE ? OR mobile LIKE ? OR gst_no LIKE ?)';
+      if (process.env.DATABASE_URL) {
+        sql += ' AND (name ILIKE ? OR mobile ILIKE ? OR gst_no ILIKE ?)';
+      } else {
+        sql += ' AND (name LIKE ? OR mobile LIKE ? OR gst_no LIKE ?)';
+      }
       const s = `%${search}%`;
       params.push(s, s, s);
     }
