@@ -38,6 +38,7 @@ app.use('/api/parties', require('./routes/parties'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/admin', require('./routes/admin'));
 app.use('/api/pdf', require('./routes/pdf'));
 
 // Global error handler

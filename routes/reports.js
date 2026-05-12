@@ -172,21 +172,152 @@ router.get('/party-ledger/:partyId', async (req, res) => {
        COUNT(*) as total_invoices,
        COALESCE(SUM(grand_total), 0) as total_amount,
        COALESCE(SUM(amount_paid), 0) as total_paid,
-       COALESCE(SUM(grand_total - amount_paid), 0) as outstanding
+       COALESCE(SUM(grand_total - amount_paid), 0) as invoice_outstanding
        FROM invoices
        WHERE party_id = ? AND company_id = ? AND status != 'cancelled'`,
       [req.params.partyId, req.companyId]
     );
+
+    const openingBalance = parseFloat(party[0].opening_balance || 0);
+    const invoiceOutstanding = parseFloat(summary[0].invoice_outstanding || 0);
+    const enrichedSummary = {
+      ...summary[0],
+      opening_balance: openingBalance,
+      outstanding: invoiceOutstanding + openingBalance,
+    };
 
     res.json({
       success: true,
       party: party[0],
       invoices,
       payments: allPayments,
-      summary: summary[0],
+      summary: enrichedSummary,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+// GET /api/reports/accountant — detailed bill-wise report for accountant
+router.get('/accountant', async (req, res) => {
+  try {
+    const { from_date, to_date, year, month } = req.query;
+
+    let dateFilter = '';
+    let params = [req.companyId];
+
+    if (from_date && to_date) {
+      dateFilter = isPostgres
+        ? ' AND i.invoice_date >= ? AND i.invoice_date <= ?'
+        : ' AND i.invoice_date >= ? AND i.invoice_date <= ?';
+      params.push(from_date, to_date);
+    } else if (year && month) {
+      if (isPostgres) {
+        dateFilter = ' AND EXTRACT(YEAR FROM i.invoice_date) = ? AND EXTRACT(MONTH FROM i.invoice_date) = ?';
+        params.push(parseInt(year), parseInt(month));
+      } else {
+        const prefix = `${year}-${String(month).padStart(2, '0')}`;
+        dateFilter = ' AND i.invoice_date LIKE ?';
+        params.push(`${prefix}%`);
+      }
+    } else if (year) {
+      if (isPostgres) {
+        dateFilter = ' AND EXTRACT(YEAR FROM i.invoice_date) = ?';
+        params.push(parseInt(year));
+      } else {
+        dateFilter = ` AND ${yearExpr('i.invoice_date')} = ?`;
+        params.push(String(year));
+      }
+    }
+
+    // Bill-wise detail with party GST info
+    const [invoices] = await query(
+      `SELECT
+        i.id, i.invoice_no, i.invoice_date, i.invoice_type, i.supply_type,
+        i.subtotal, i.total_discount, i.taxable_amount,
+        i.total_cgst, i.total_sgst, i.total_igst,
+        (i.total_cgst + i.total_sgst + i.total_igst) as total_tax,
+        i.grand_total, i.amount_paid,
+        (i.grand_total - i.amount_paid) as balance,
+        i.payment_status,
+        p.name as party_name, p.gst_no as party_gst, p.city as party_city, p.state as party_state,
+        CASE WHEN p.gst_no IS NOT NULL AND p.gst_no != 'NA' AND p.gst_no != '' THEN 1 ELSE 0 END as has_gstin
+       FROM invoices i
+       LEFT JOIN parties p ON i.party_id = p.id
+       WHERE i.company_id = ? AND i.status != 'cancelled'
+       ${dateFilter}
+       ORDER BY i.invoice_date ASC, i.invoice_no ASC`,
+      params
+    );
+
+    // HSN/Tax rate wise summary
+    const [hsnSummary] = await query(
+      `SELECT
+        ii.hsn_code, ii.gst_rate,
+        SUM(ii.qty) as total_qty,
+        SUM(ii.taxable_amount) as taxable_amount,
+        SUM(ii.cgst) as total_cgst,
+        SUM(ii.sgst) as total_sgst,
+        SUM(ii.igst) as total_igst,
+        SUM(ii.cgst + ii.sgst + ii.igst) as total_tax
+       FROM invoice_items ii
+       JOIN invoices i ON ii.invoice_id = i.id
+       WHERE i.company_id = ? AND i.status != 'cancelled'
+       ${dateFilter}
+       GROUP BY ii.hsn_code, ii.gst_rate
+       ORDER BY ii.gst_rate ASC`,
+      params
+    );
+
+    // Overall totals
+    const [totals] = await query(
+      `SELECT
+        COUNT(*) as total_invoices,
+        COALESCE(SUM(subtotal),0) as total_subtotal,
+        COALESCE(SUM(total_discount),0) as total_discount,
+        COALESCE(SUM(taxable_amount),0) as total_taxable,
+        COALESCE(SUM(total_cgst),0) as total_cgst,
+        COALESCE(SUM(total_sgst),0) as total_sgst,
+        COALESCE(SUM(total_igst),0) as total_igst,
+        COALESCE(SUM(total_cgst + total_sgst + total_igst),0) as total_tax,
+        COALESCE(SUM(grand_total),0) as total_grand,
+        COALESCE(SUM(amount_paid),0) as total_paid,
+        COALESCE(SUM(grand_total - amount_paid),0) as total_outstanding
+       FROM invoices i
+       WHERE i.company_id = ? AND i.status != 'cancelled'
+       ${dateFilter}`,
+      params
+    );
+
+    // Party-wise GST summary
+    const [partyGstSummary] = await query(
+      `SELECT
+        p.name as party_name, p.gst_no as party_gst,
+        CASE WHEN p.gst_no IS NOT NULL AND p.gst_no != 'NA' AND p.gst_no != '' THEN 1 ELSE 0 END as has_gstin,
+        COUNT(i.id) as invoice_count,
+        COALESCE(SUM(i.taxable_amount),0) as taxable_amount,
+        COALESCE(SUM(i.total_cgst + i.total_sgst + i.total_igst),0) as total_tax,
+        COALESCE(SUM(i.grand_total),0) as grand_total
+       FROM invoices i
+       LEFT JOIN parties p ON i.party_id = p.id
+       WHERE i.company_id = ? AND i.status != 'cancelled'
+       ${dateFilter}
+       GROUP BY i.party_id, p.name, p.gst_no
+       ORDER BY grand_total DESC`,
+      params
+    );
+
+    res.json({
+      success: true,
+      invoices,
+      hsn_summary: hsnSummary,
+      totals: totals[0],
+      party_gst_summary: partyGstSummary,
+      filters: { from_date, to_date, year, month },
+    });
+  } catch (err) {
+    console.error('Accountant report error:', err);
+    res.status(500).json({ success: false, message: 'Server error: ' + err.message });
   }
 });
 

@@ -66,7 +66,7 @@ router.post('/', async (req, res) => {
 // PUT /api/parties/:id
 router.put('/:id', async (req, res) => {
   try {
-    const { name, address, city, state, mobile, email, gst_no, party_type } = req.body;
+    const { name, address, city, state, mobile, email, gst_no, party_type, opening_balance } = req.body;
     const [existing] = await query(
       'SELECT id FROM parties WHERE id = ? AND company_id = ?',
       [req.params.id, req.companyId]
@@ -74,8 +74,8 @@ router.put('/:id', async (req, res) => {
     if (existing.length === 0) return res.status(404).json({ success: false, message: 'Party not found.' });
 
     await query(
-      'UPDATE parties SET name=?, address=?, city=?, state=?, mobile=?, email=?, gst_no=?, party_type=?, updated_at=datetime(\'now\') WHERE id=?',
-      [name, address || '', city || '', state || '', mobile || '', email || '', gst_no || 'NA', party_type || 'customer', req.params.id]
+      'UPDATE parties SET name=?, address=?, city=?, state=?, mobile=?, email=?, gst_no=?, party_type=?, opening_balance=?, updated_at=datetime(\'now\') WHERE id=?',
+      [name, address || '', city || '', state || '', mobile || '', email || '', gst_no || 'NA', party_type || 'customer', opening_balance || 0, req.params.id]
     );
 
     const [updated] = await query('SELECT * FROM parties WHERE id = ?', [req.params.id]);
