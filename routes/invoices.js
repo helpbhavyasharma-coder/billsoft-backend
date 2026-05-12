@@ -398,8 +398,7 @@ router.delete('/:id', async (req, res) => {
 
     const deletedInvoiceNo = existing[0].invoice_no;
 
-    // Soft delete
-    await query('UPDATE invoices SET status = ? WHERE id = ?', ['cancelled', req.params.id]);
+    await query('DELETE FROM invoices WHERE id = ? AND company_id = ?', [req.params.id, req.companyId]);
 
     // Smart counter reset - keep it above every historical invoice number.
     const [lastInvoice] = await query(

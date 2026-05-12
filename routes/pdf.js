@@ -26,7 +26,8 @@ router.get('/invoice/:id', async (req, res) => {
 
     const cleanInvoiceNo = invoices[0].invoice_no.replace(/\//g, ' ');
     const cleanPartyName = (parties[0]?.name || '').replace(/[^a-zA-Z0-9\s]/g, '').trim();
-    const fileName = `${cleanInvoiceNo} ${cleanPartyName}.pdf`;
+    const cleanAmount = `Rs ${parseFloat(invoices[0].grand_total || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+    const fileName = `${cleanInvoiceNo} ${cleanPartyName} ${cleanAmount}.pdf`;
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
