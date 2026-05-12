@@ -3,7 +3,17 @@ const router = express.Router();
 const { query, getConnection } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
 
-router.use(authenticate, attachCompany);
+const isPostgres = !!(process.env.DATABASE_URL);
+
+// Invoice list ordering - PostgreSQL vs SQLite
+const invoiceOrderSQL = isPostgres
+  ? `CAST(SPLIT_PART(i.invoice_no, '/', 3) AS INTEGER) DESC, i.id DESC`
+  : `CAST(SUBSTR(i.invoice_no, LENGTH(i.invoice_no) - 2) AS INTEGER) DESC, i.id DESC`;
+
+// COALESCE for nullable update - PostgreSQL vs SQLite
+const coalesceSQL = isPostgres
+  ? `payment_status = COALESCE($${'{PS}'}, payment_status), amount_paid = COALESCE($${'{AP}'}, amount_paid)`
+  : `payment_status=COALESCE(?,payment_status), amount_paid=COALESCE(?,amount_paid)`;
 
 // GET /api/invoices/dashboard/stats  (must be before /:id)
 router.get('/dashboard/stats', async (req, res) => {
@@ -94,7 +104,7 @@ router.get('/', async (req, res) => {
       SELECT i.*, p.name as party_name, p.mobile as party_mobile, p.gst_no as party_gst
       FROM invoices i
       LEFT JOIN parties p ON i.party_id = p.id
-      WHERE i.company_id = ?
+      WHERE i.company_id = ? AND i.status != 'cancelled'
     `;
     const params = [req.companyId];
 
@@ -115,7 +125,7 @@ router.get('/', async (req, res) => {
     const [countResult] = await query(countSql, params);
     const total = countResult[0].total;
 
-    sql += ' ORDER BY CAST(SUBSTR(i.invoice_no, LENGTH(i.invoice_no) - 2) AS INTEGER) DESC, i.id DESC';
+    sql += ` ORDER BY ${invoiceOrderSQL}`;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     sql += ` LIMIT ${parseInt(limit)} OFFSET ${offset}`;
 
@@ -370,7 +380,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/invoices/:id - Hard delete (cancelled invoices reuse number)
+// DELETE /api/invoices/:id
 router.delete('/:id', async (req, res) => {
   try {
     const [existing] = await query(
@@ -381,30 +391,32 @@ router.delete('/:id', async (req, res) => {
 
     const deletedInvoiceNo = existing[0].invoice_no;
 
-    // Soft delete - mark as cancelled
+    // Soft delete
     await query('UPDATE invoices SET status = ? WHERE id = ?', ['cancelled', req.params.id]);
 
-    // Reset counter if this was the last invoice number
-    const lastNum = parseInt(deletedInvoiceNo.split('/').pop());
-    if (!isNaN(lastNum)) {
-      // Check if any active invoice has this number or higher
-      const [higher] = await query(
-        `SELECT id FROM invoices WHERE company_id = ? AND status != 'cancelled'
-         AND CAST(SUBSTR(invoice_no, LENGTH(invoice_no) - 2) AS INTEGER) >= ?`,
-        [req.companyId, lastNum]
-      );
-      if (higher.length === 0) {
-        // No active invoice with this number - reset counter to reuse it
-        await query(
-          'UPDATE companies SET invoice_counter = ? WHERE id = ? AND invoice_counter > ?',
-          [lastNum, req.companyId, lastNum - 1]
-        );
+    // Smart counter reset - check last active invoice number
+    const [lastActive] = await query(
+      `SELECT invoice_no FROM invoices
+       WHERE company_id = ? AND status != 'cancelled'
+       ORDER BY id DESC LIMIT 1`,
+      [req.companyId]
+    );
+
+    if (lastActive.length === 0) {
+      // No active invoices - reset to 1
+      await query('UPDATE companies SET invoice_counter = 1 WHERE id = ?', [req.companyId]);
+    } else {
+      const parts = lastActive[0].invoice_no.split('/');
+      const lastNum = parseInt(parts[parts.length - 1]);
+      if (!isNaN(lastNum)) {
+        await query('UPDATE companies SET invoice_counter = ? WHERE id = ?', [lastNum + 1, req.companyId]);
       }
     }
 
     res.json({ success: true, message: 'Invoice deleted.', deleted_no: deletedInvoiceNo });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Server error.' });
+    console.error('Delete error:', err);
+    res.status(500).json({ success: false, message: 'Server error: ' + err.message });
   }
 });
 
