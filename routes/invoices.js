@@ -313,10 +313,10 @@ router.post('/', async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error('Create invoice error:', err);
-    if (err.message && err.message.includes('UNIQUE')) {
+    if (err.code === '23505' || (err.message && err.message.includes('UNIQUE'))) {
       return res.status(409).json({ success: false, message: 'Invoice number already exists.' });
     }
-    res.status(500).json({ success: false, message: 'Server error.' });
+    res.status(500).json({ success: false, message: 'Server error: ' + err.message });
   }
 });
 
