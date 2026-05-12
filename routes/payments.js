@@ -154,7 +154,7 @@ router.get('/outstanding', async (req, res) => {
          AND i.payment_status IN ('unpaid','partial')
        WHERE p.company_id = ? AND p.is_active = 1
        GROUP BY p.id, p.name, p.mobile
-       HAVING outstanding > 0
+       HAVING COALESCE(SUM(i.grand_total - i.amount_paid), 0) > 0
        ORDER BY outstanding DESC`,
       [req.companyId, req.companyId]
     );

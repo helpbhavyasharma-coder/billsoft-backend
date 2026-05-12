@@ -3,6 +3,8 @@ const router = express.Router();
 const { query, getConnection } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
 
+router.use(authenticate, attachCompany);
+
 const isPostgres = !!(process.env.DATABASE_URL);
 
 // Invoice list ordering - PostgreSQL vs SQLite
