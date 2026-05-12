@@ -72,18 +72,19 @@ router.get('/next-number', async (req, res) => {
 
     const { invoice_prefix, financial_year } = company[0];
 
-    // Find highest ACTIVE invoice number
-    const [lastActive] = await query(
+    // Find highest invoice number, including cancelled invoices. The database
+    // enforces uniqueness across all statuses, so cancelled numbers cannot be reused.
+    const [lastInvoice] = await query(
       `SELECT invoice_no FROM invoices 
-       WHERE company_id = ? AND status != 'cancelled'
+       WHERE company_id = ?
        ORDER BY id DESC LIMIT 1`,
       [req.companyId]
     );
 
     let nextCounter = 1;
 
-    if (lastActive.length > 0) {
-      const parts = lastActive[0].invoice_no.split('/');
+    if (lastInvoice.length > 0) {
+      const parts = lastInvoice[0].invoice_no.split('/');
       const lastNum = parseInt(parts[parts.length - 1]);
       if (!isNaN(lastNum)) nextCounter = lastNum + 1;
     }
@@ -400,19 +401,19 @@ router.delete('/:id', async (req, res) => {
     // Soft delete
     await query('UPDATE invoices SET status = ? WHERE id = ?', ['cancelled', req.params.id]);
 
-    // Smart counter reset - check last active invoice number
-    const [lastActive] = await query(
+    // Smart counter reset - keep it above every historical invoice number.
+    const [lastInvoice] = await query(
       `SELECT invoice_no FROM invoices
-       WHERE company_id = ? AND status != 'cancelled'
+       WHERE company_id = ?
        ORDER BY id DESC LIMIT 1`,
       [req.companyId]
     );
 
-    if (lastActive.length === 0) {
-      // No active invoices - reset to 1
+    if (lastInvoice.length === 0) {
+      // No invoices at all - reset to 1
       await query('UPDATE companies SET invoice_counter = 1 WHERE id = ?', [req.companyId]);
     } else {
-      const parts = lastActive[0].invoice_no.split('/');
+      const parts = lastInvoice[0].invoice_no.split('/');
       const lastNum = parseInt(parts[parts.length - 1]);
       if (!isNaN(lastNum)) {
         await query('UPDATE companies SET invoice_counter = ? WHERE id = ?', [lastNum + 1, req.companyId]);
