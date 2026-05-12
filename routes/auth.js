@@ -6,6 +6,15 @@ const { body, validationResult } = require('express-validator');
 const { query } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
 
+function jwtSecretOr500(res) {
+  if (!process.env.JWT_SECRET) {
+    console.error('JWT_SECRET is not set');
+    res.status(500).json({ success: false, message: 'Server configuration error.' });
+    return null;
+  }
+  return process.env.JWT_SECRET;
+}
+
 // POST /api/auth/register
 router.post('/register', [
   body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
@@ -31,7 +40,10 @@ router.post('/register', [
       [email, hashedPassword]
     );
 
-    const token = jwt.sign({ userId: result.insertId }, process.env.JWT_SECRET, {
+    const secret = jwtSecretOr500(res);
+    if (!secret) return;
+
+    const token = jwt.sign({ userId: result.insertId }, secret, {
       expiresIn: process.env.JWT_EXPIRES_IN || '7d',
     });
 
@@ -76,7 +88,10 @@ router.post('/login', [
     const [companies] = await query('SELECT id FROM companies WHERE user_id = ?', [user.id]);
     const hasCompany = companies.length > 0;
 
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, {
+    const secret = jwtSecretOr500(res);
+    if (!secret) return;
+
+    const token = jwt.sign({ userId: user.id }, secret, {
       expiresIn: process.env.JWT_EXPIRES_IN || '7d',
     });
 
@@ -115,7 +130,8 @@ router.post('/change-password', authenticate, [
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, errors: errors.array() });
+    const msg = errors.array().map((e) => e.msg).join(' ');
+    return res.status(400).json({ success: false, message: msg, errors: errors.array() });
   }
 
   const { currentPassword, newPassword } = req.body;
