@@ -203,6 +203,18 @@ if (isProduction) {
           reference_id INTEGER,
           created_at TIMESTAMP DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS user_sessions (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          token_hash VARCHAR(128) NOT NULL UNIQUE,
+          ip_address VARCHAR(100),
+          user_agent TEXT,
+          last_seen_at TIMESTAMP DEFAULT NOW(),
+          expires_at TIMESTAMP,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
       `);
       await pool.query(`ALTER TABLE payments ALTER COLUMN invoice_id DROP NOT NULL`).catch(() => {});
       await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'invoice'`).catch(() => {});
@@ -475,6 +487,19 @@ if (isProduction) {
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES ledger_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      ip_address TEXT,
+      user_agent TEXT,
+      last_seen_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
   `);
 

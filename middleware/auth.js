@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { query } = require('../config/db');
 
 const authenticate = async (req, res, next) => {
@@ -20,6 +21,10 @@ const authenticate = async (req, res, next) => {
     }
 
     req.user = { id: decoded.userId, email: rows[0].email, is_admin: !!rows[0].is_admin };
+    await query(
+      "UPDATE user_sessions SET last_seen_at = ?, is_active = ? WHERE token_hash = ?",
+      [new Date().toISOString(), 1, crypto.createHash('sha256').update(token).digest('hex')]
+    ).catch(() => {});
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {

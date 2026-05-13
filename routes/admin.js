@@ -89,9 +89,28 @@ router.get('/users/:id', async (req, res) => {
     const [productStats] = companyId ? await query('SELECT COUNT(*) as total FROM products WHERE company_id = ? AND is_active = 1', [companyId]) : [[{ total: 0 }]];
     const [paymentStats] = companyId ? await query('SELECT COUNT(*) as total, COALESCE(SUM(amount),0) as amount FROM payments WHERE company_id = ?', [companyId]) : [[{ total: 0, amount: 0 }]];
     const [purchaseStats] = companyId ? await query('SELECT COUNT(*) as total, COALESCE(SUM(grand_total),0) as amount FROM purchase_bills WHERE company_id = ?', [companyId]).catch(() => [[{ total: 0, amount: 0 }]]) : [[{ total: 0, amount: 0 }]];
-    const [invoices] = companyId ? await query('SELECT id, invoice_no, invoice_date, grand_total, payment_status, status FROM invoices WHERE company_id = ? ORDER BY invoice_date DESC, id DESC LIMIT 10', [companyId]) : [[]];
-    const [parties] = companyId ? await query('SELECT id, name, mobile, party_type, opening_balance FROM parties WHERE company_id = ? ORDER BY name ASC LIMIT 10', [companyId]) : [[]];
-    const [products] = companyId ? await query('SELECT id, name, category, unit, default_rate, gst_rate FROM products WHERE company_id = ? AND is_active = 1 ORDER BY name ASC LIMIT 10', [companyId]) : [[]];
+    const [activeDevices] = await query(
+      "SELECT COUNT(*) as total FROM user_sessions WHERE user_id = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > ?)",
+      [req.params.id, new Date().toISOString()]
+    ).catch(() => [[{ total: 0 }]]);
+    const [sessions] = await query(
+      'SELECT id, ip_address, user_agent, last_seen_at, expires_at, is_active, created_at FROM user_sessions WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 25',
+      [req.params.id]
+    ).catch(() => [[]]);
+    const [invoices] = companyId ? await query(
+      `SELECT i.id, i.invoice_no, i.invoice_date, i.grand_total, i.amount_paid, i.payment_status, i.status,
+       p.name as party_name FROM invoices i LEFT JOIN parties p ON p.id = i.party_id
+       WHERE i.company_id = ? ORDER BY i.invoice_date DESC, i.id DESC`,
+      [companyId]
+    ) : [[]];
+    const [parties] = companyId ? await query(
+      'SELECT id, name, mobile, email, gst_no, party_type, opening_balance, is_active, created_at FROM parties WHERE company_id = ? ORDER BY name ASC',
+      [companyId]
+    ) : [[]];
+    const [products] = companyId ? await query(
+      'SELECT id, name, hsn_code, category, unit, default_rate, gst_rate, is_active, created_at FROM products WHERE company_id = ? ORDER BY name ASC',
+      [companyId]
+    ) : [[]];
 
     res.json({
       success: true,
@@ -103,8 +122,10 @@ router.get('/users/:id', async (req, res) => {
           products: productStats[0],
           payments: paymentStats[0],
           purchases: purchaseStats[0],
+          active_devices: activeDevices[0],
         },
-        recent: { invoices, parties, products },
+        lists: { invoices, parties, products, sessions },
+        recent: { invoices: invoices.slice(0, 10), parties: parties.slice(0, 10), products: products.slice(0, 10) },
       },
     });
   } catch (err) {

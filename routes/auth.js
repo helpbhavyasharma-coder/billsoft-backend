@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const { query } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
@@ -13,6 +14,10 @@ function jwtSecretOr500(res) {
     return null;
   }
   return process.env.JWT_SECRET;
+}
+
+function tokenHash(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 // POST /api/auth/register
@@ -99,6 +104,18 @@ router.post('/login', [
     const token = jwt.sign({ userId: user.id }, secret, {
       expiresIn: process.env.JWT_EXPIRES_IN || '7d',
     });
+    const decodedToken = jwt.decode(token);
+    await query(
+      'INSERT INTO user_sessions (user_id, token_hash, ip_address, user_agent, expires_at, is_active) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        user.id,
+        tokenHash(token),
+        req.ip || req.headers['x-forwarded-for'] || '',
+        req.headers['user-agent'] || '',
+        decodedToken?.exp ? new Date(decodedToken.exp * 1000).toISOString() : null,
+        1,
+      ]
+    ).catch(() => {});
 
     res.json({
       success: true,
