@@ -117,15 +117,18 @@ if (isProduction) {
         CREATE TABLE IF NOT EXISTS payments (
           id SERIAL PRIMARY KEY,
           company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-          invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+          invoice_id INTEGER REFERENCES invoices(id) ON DELETE CASCADE,
           party_id INTEGER NOT NULL REFERENCES parties(id),
           amount DECIMAL(12,2) NOT NULL,
           payment_date DATE NOT NULL,
+          payment_type VARCHAR(20) DEFAULT 'invoice',
           payment_mode VARCHAR(30) DEFAULT 'cash',
           reference_no VARCHAR(100), notes TEXT,
           created_at TIMESTAMP DEFAULT NOW()
         );
       `);
+      await pool.query(`ALTER TABLE payments ALTER COLUMN invoice_id DROP NOT NULL`).catch(() => {});
+      await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'invoice'`).catch(() => {});
       console.log('✅ PostgreSQL schema initialized');
     } catch (err) {
       console.error('Schema init error:', err.message);
@@ -297,9 +300,9 @@ if (isProduction) {
     );
     CREATE TABLE IF NOT EXISTS payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      company_id INTEGER NOT NULL, invoice_id INTEGER NOT NULL,
+      company_id INTEGER NOT NULL, invoice_id INTEGER,
       party_id INTEGER NOT NULL, amount REAL NOT NULL,
-      payment_date TEXT NOT NULL, payment_mode TEXT DEFAULT 'cash',
+      payment_date TEXT NOT NULL, payment_type TEXT DEFAULT 'invoice', payment_mode TEXT DEFAULT 'cash',
       reference_no TEXT, notes TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
@@ -309,6 +312,31 @@ if (isProduction) {
 
   // Migration
   try { db.prepare("ALTER TABLE companies ADD COLUMN business_type TEXT DEFAULT 'general'").run(); } catch {}
+  try { db.prepare("ALTER TABLE payments ADD COLUMN payment_type TEXT DEFAULT 'invoice'").run(); } catch {}
+  try {
+    const cols = db.prepare("PRAGMA table_info(payments)").all();
+    const invoiceIdCol = cols.find((col) => col.name === 'invoice_id');
+    if (invoiceIdCol?.notnull) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE IF NOT EXISTS payments_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          company_id INTEGER NOT NULL, invoice_id INTEGER,
+          party_id INTEGER NOT NULL, amount REAL NOT NULL,
+          payment_date TEXT NOT NULL, payment_type TEXT DEFAULT 'invoice', payment_mode TEXT DEFAULT 'cash',
+          reference_no TEXT, notes TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+          FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+        );
+        INSERT INTO payments_new (id, company_id, invoice_id, party_id, amount, payment_date, payment_type, payment_mode, reference_no, notes, created_at)
+        SELECT id, company_id, invoice_id, party_id, amount, payment_date, COALESCE(payment_type, 'invoice'), payment_mode, reference_no, notes, created_at FROM payments;
+        DROP TABLE payments;
+        ALTER TABLE payments_new RENAME TO payments;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+  } catch {}
 
   console.log('✅ SQLite Database initialized (local)');
 

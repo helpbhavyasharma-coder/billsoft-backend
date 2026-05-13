@@ -178,12 +178,22 @@ router.get('/party-ledger/:partyId', async (req, res) => {
       [req.params.partyId, req.companyId]
     );
 
+    const [generalPayments] = await query(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM payments
+       WHERE party_id = ? AND company_id = ? AND invoice_id IS NULL`,
+      [req.params.partyId, req.companyId]
+    );
+
     const openingBalance = parseFloat(party[0].opening_balance || 0);
     const invoiceOutstanding = parseFloat(summary[0].invoice_outstanding || 0);
+    const generalPaid = parseFloat(generalPayments[0].total || 0);
     const enrichedSummary = {
       ...summary[0],
+      total_paid: parseFloat(summary[0].total_paid || 0) + generalPaid,
       opening_balance: openingBalance,
-      outstanding: invoiceOutstanding + openingBalance,
+      general_paid: generalPaid,
+      outstanding: invoiceOutstanding + openingBalance - generalPaid,
     };
 
     res.json({
