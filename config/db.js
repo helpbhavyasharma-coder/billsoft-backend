@@ -126,6 +126,80 @@ if (isProduction) {
           reference_no VARCHAR(100), notes TEXT,
           created_at TIMESTAMP DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS purchase_bills (
+          id SERIAL PRIMARY KEY,
+          company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+          supplier_id INTEGER REFERENCES parties(id),
+          bill_no VARCHAR(100),
+          purchase_date DATE NOT NULL,
+          subtotal DECIMAL(12,2) DEFAULT 0,
+          total_gst DECIMAL(12,2) DEFAULT 0,
+          grand_total DECIMAL(12,2) DEFAULT 0,
+          payment_status VARCHAR(20) DEFAULT 'unpaid',
+          payment_mode VARCHAR(30) DEFAULT 'cash',
+          notes TEXT,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS purchase_items (
+          id SERIAL PRIMARY KEY,
+          purchase_id INTEGER NOT NULL REFERENCES purchase_bills(id) ON DELETE CASCADE,
+          product_id INTEGER REFERENCES products(id),
+          qty DECIMAL(12,3) DEFAULT 0,
+          short_qty DECIMAL(12,3) DEFAULT 0,
+          damaged_qty DECIMAL(12,3) DEFAULT 0,
+          expired_qty DECIMAL(12,3) DEFAULT 0,
+          accepted_qty DECIMAL(12,3) DEFAULT 0,
+          rate DECIMAL(12,2) DEFAULT 0,
+          gst_rate DECIMAL(5,2) DEFAULT 0,
+          taxable_amount DECIMAL(12,2) DEFAULT 0,
+          gst_amount DECIMAL(12,2) DEFAULT 0,
+          total_amount DECIMAL(12,2) DEFAULT 0,
+          expiry_date DATE,
+          notes TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS stock_movements (
+          id SERIAL PRIMARY KEY,
+          company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+          product_id INTEGER NOT NULL REFERENCES products(id),
+          movement_date DATE NOT NULL,
+          movement_type VARCHAR(30) NOT NULL,
+          qty DECIMAL(12,3) DEFAULT 0,
+          reference_type VARCHAR(30),
+          reference_id INTEGER,
+          notes TEXT,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS ledger_accounts (
+          id SERIAL PRIMARY KEY,
+          company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+          name VARCHAR(255) NOT NULL,
+          account_type VARCHAR(20) DEFAULT 'bank',
+          account_no VARCHAR(100),
+          ifsc VARCHAR(30),
+          branch VARCHAR(100),
+          opening_balance DECIMAL(12,2) DEFAULT 0,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS ledger_entries (
+          id SERIAL PRIMARY KEY,
+          company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+          account_id INTEGER NOT NULL REFERENCES ledger_accounts(id) ON DELETE CASCADE,
+          entry_date DATE NOT NULL,
+          entry_type VARCHAR(10) NOT NULL,
+          amount DECIMAL(12,2) NOT NULL,
+          description TEXT,
+          reference_no VARCHAR(100),
+          reference_type VARCHAR(30),
+          reference_id INTEGER,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
       `);
       await pool.query(`ALTER TABLE payments ALTER COLUMN invoice_id DROP NOT NULL`).catch(() => {});
       await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'invoice'`).catch(() => {});
@@ -307,6 +381,84 @@ if (isProduction) {
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
       FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS purchase_bills (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL,
+      supplier_id INTEGER,
+      bill_no TEXT,
+      purchase_date TEXT NOT NULL,
+      subtotal REAL DEFAULT 0,
+      total_gst REAL DEFAULT 0,
+      grand_total REAL DEFAULT 0,
+      payment_status TEXT DEFAULT 'unpaid',
+      payment_mode TEXT DEFAULT 'cash',
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+      FOREIGN KEY (supplier_id) REFERENCES parties(id)
+    );
+    CREATE TABLE IF NOT EXISTS purchase_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_id INTEGER NOT NULL,
+      product_id INTEGER,
+      qty REAL DEFAULT 0,
+      short_qty REAL DEFAULT 0,
+      damaged_qty REAL DEFAULT 0,
+      expired_qty REAL DEFAULT 0,
+      accepted_qty REAL DEFAULT 0,
+      rate REAL DEFAULT 0,
+      gst_rate REAL DEFAULT 0,
+      taxable_amount REAL DEFAULT 0,
+      gst_amount REAL DEFAULT 0,
+      total_amount REAL DEFAULT 0,
+      expiry_date TEXT,
+      notes TEXT,
+      FOREIGN KEY (purchase_id) REFERENCES purchase_bills(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE TABLE IF NOT EXISTS stock_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      movement_date TEXT NOT NULL,
+      movement_type TEXT NOT NULL,
+      qty REAL DEFAULT 0,
+      reference_type TEXT,
+      reference_id INTEGER,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE TABLE IF NOT EXISTS ledger_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      account_type TEXT DEFAULT 'bank',
+      account_no TEXT,
+      ifsc TEXT,
+      branch TEXT,
+      opening_balance REAL DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS ledger_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL,
+      account_id INTEGER NOT NULL,
+      entry_date TEXT NOT NULL,
+      entry_type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      description TEXT,
+      reference_no TEXT,
+      reference_type TEXT,
+      reference_id INTEGER,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES ledger_accounts(id) ON DELETE CASCADE
     );
   `);
 
