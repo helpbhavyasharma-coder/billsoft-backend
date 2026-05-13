@@ -80,12 +80,17 @@ router.post('/login', [
     }
 
     const user = users[0];
+    if (user.is_active === false || user.is_active === 0) {
+      return res.status(403).json({ success: false, message: 'Your account is deactivated. Please contact admin.' });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ success: false, message: 'Invalid email or password.' });
     }
 
-    const [companies] = await query('SELECT id FROM companies WHERE user_id = ?', [user.id]);
+    const isAdmin = user.is_admin === true || user.is_admin === 1;
+    const [companies] = isAdmin ? [[]] : await query('SELECT id FROM companies WHERE user_id = ?', [user.id]);
     const hasCompany = companies.length > 0;
 
     const secret = jwtSecretOr500(res);
@@ -99,8 +104,9 @@ router.post('/login', [
       success: true,
       message: 'Login successful.',
       token,
-      user: { id: user.id, email: user.email },
+      user: { id: user.id, email: user.email, is_admin: isAdmin },
       hasCompany,
+      isAdmin,
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -111,7 +117,7 @@ router.post('/login', [
 // GET /api/auth/me
 router.get('/me', authenticate, async (req, res) => {
   try {
-    const [companies] = await query('SELECT * FROM companies WHERE user_id = ?', [req.user.id]);
+    const [companies] = req.user.is_admin ? [[]] : await query('SELECT * FROM companies WHERE user_id = ?', [req.user.id]);
     res.json({
       success: true,
       user: req.user,

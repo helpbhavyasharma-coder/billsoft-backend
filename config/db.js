@@ -1,5 +1,6 @@
 // Auto-detect: PostgreSQL (production/Railway) or SQLite (local development)
 const isProduction = !!(process.env.DATABASE_URL);
+const bcrypt = require('bcryptjs');
 
 let query, getConnection;
 
@@ -30,6 +31,8 @@ if (isProduction) {
           id SERIAL PRIMARY KEY,
           email VARCHAR(255) NOT NULL UNIQUE,
           password VARCHAR(255) NOT NULL,
+          is_admin BOOLEAN DEFAULT FALSE,
+          is_active BOOLEAN DEFAULT TRUE,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         );
@@ -203,6 +206,17 @@ if (isProduction) {
       `);
       await pool.query(`ALTER TABLE payments ALTER COLUMN invoice_id DROP NOT NULL`).catch(() => {});
       await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'invoice'`).catch(() => {});
+      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`).catch(() => {});
+      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`).catch(() => {});
+      if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+        const hashed = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
+        await pool.query(
+          `INSERT INTO users (email, password, is_admin, is_active)
+           VALUES ($1, $2, TRUE, TRUE)
+           ON CONFLICT (email) DO UPDATE SET is_admin = TRUE, is_active = TRUE`,
+          [process.env.ADMIN_EMAIL.toLowerCase(), hashed]
+        ).catch(() => {});
+      }
       console.log('✅ PostgreSQL schema initialized');
     } catch (err) {
       console.error('Schema init error:', err.message);
@@ -302,6 +316,8 @@ if (isProduction) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL UNIQUE,
       password TEXT NOT NULL,
+      is_admin INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -464,7 +480,21 @@ if (isProduction) {
 
   // Migration
   try { db.prepare("ALTER TABLE companies ADD COLUMN business_type TEXT DEFAULT 'general'").run(); } catch {}
+  try { db.prepare("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0").run(); } catch {}
+  try { db.prepare("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1").run(); } catch {}
   try { db.prepare("ALTER TABLE payments ADD COLUMN payment_type TEXT DEFAULT 'invoice'").run(); } catch {}
+  try {
+    if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+      const email = process.env.ADMIN_EMAIL.toLowerCase();
+      const hashed = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 12);
+      const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+      if (existing) {
+        db.prepare('UPDATE users SET is_admin = 1, is_active = 1 WHERE email = ?').run(email);
+      } else {
+        db.prepare('INSERT INTO users (email, password, is_admin, is_active) VALUES (?, ?, 1, 1)').run(email, hashed);
+      }
+    }
+  } catch {}
   try {
     const cols = db.prepare("PRAGMA table_info(payments)").all();
     const invoiceIdCol = cols.find((col) => col.name === 'invoice_id');
