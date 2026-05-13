@@ -213,7 +213,7 @@ if (isProduction) {
         await pool.query(
           `INSERT INTO users (email, password, is_admin, is_active)
            VALUES ($1, $2, TRUE, TRUE)
-           ON CONFLICT (email) DO UPDATE SET is_admin = TRUE, is_active = TRUE`,
+           ON CONFLICT (email) DO UPDATE SET password = EXCLUDED.password, is_admin = TRUE, is_active = TRUE`,
           [process.env.ADMIN_EMAIL.toLowerCase(), hashed]
         ).catch(() => {});
       }
@@ -489,7 +489,7 @@ if (isProduction) {
       const hashed = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 12);
       const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
       if (existing) {
-        db.prepare('UPDATE users SET is_admin = 1, is_active = 1 WHERE email = ?').run(email);
+        db.prepare('UPDATE users SET password = ?, is_admin = 1, is_active = 1 WHERE email = ?').run(hashed, email);
       } else {
         db.prepare('INSERT INTO users (email, password, is_admin, is_active) VALUES (?, ?, 1, 1)').run(email, hashed);
       }
