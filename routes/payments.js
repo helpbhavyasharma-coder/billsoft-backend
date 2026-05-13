@@ -145,16 +145,18 @@ router.get('/outstanding', async (req, res) => {
   try {
     const [rows] = await query(
       `SELECT p.id as party_id, p.name as party_name, p.mobile,
+       COALESCE(p.opening_balance, 0) as opening_balance,
        COUNT(i.id) as total_invoices,
        COALESCE(SUM(i.grand_total), 0) as total_amount,
        COALESCE(SUM(i.amount_paid), 0) as total_paid,
-       COALESCE(SUM(i.grand_total - i.amount_paid), 0) as outstanding
+       COALESCE(SUM(i.grand_total - i.amount_paid), 0) as invoice_outstanding,
+       COALESCE(p.opening_balance, 0) + COALESCE(SUM(i.grand_total - i.amount_paid), 0) as outstanding
        FROM parties p
        LEFT JOIN invoices i ON i.party_id = p.id AND i.company_id = ? AND i.status != 'cancelled'
          AND i.payment_status IN ('unpaid','partial')
        WHERE p.company_id = ? AND p.is_active = 1
-       GROUP BY p.id, p.name, p.mobile
-       HAVING COALESCE(SUM(i.grand_total - i.amount_paid), 0) > 0
+       GROUP BY p.id, p.name, p.mobile, p.opening_balance
+       HAVING COALESCE(p.opening_balance, 0) + COALESCE(SUM(i.grand_total - i.amount_paid), 0) > 0
        ORDER BY outstanding DESC`,
       [req.companyId, req.companyId]
     );
