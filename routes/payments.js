@@ -6,6 +6,61 @@ const { validateInvoicePayment } = require('../utils/accountingRules');
 
 router.use(authenticate, attachCompany);
 
+async function cashLedgerAccountId(conn, companyId) {
+  const [accounts] = await conn.query(
+    `SELECT id FROM ledger_accounts
+     WHERE company_id = ? AND is_active = 1 AND account_type = 'cash'
+     ORDER BY id ASC LIMIT 1`,
+    [companyId]
+  );
+  if (accounts.length) return accounts[0].id;
+
+  const [result] = await conn.query(
+    `INSERT INTO ledger_accounts (company_id, name, account_type, opening_balance)
+     VALUES (?,?,?,0)`,
+    [companyId, 'Cash Ledger', 'cash']
+  );
+  return result.insertId;
+}
+
+async function postCashLedgerForPayment(conn, companyId, paymentId, payment, invoice) {
+  await conn.query(
+    `DELETE FROM ledger_entries
+     WHERE company_id = ? AND reference_type = 'payment' AND reference_id = ?`,
+    [companyId, paymentId]
+  );
+
+  if ((payment.payment_mode || 'cash') !== 'cash') return;
+
+  const [parties] = await conn.query(
+    'SELECT name FROM parties WHERE id = ? AND company_id = ?',
+    [payment.party_id, companyId]
+  );
+  const accountId = await cashLedgerAccountId(conn, companyId);
+  const partyName = parties[0]?.name || 'Party';
+  const invoiceNo = invoice?.invoice_no || '';
+  const description = invoiceNo
+    ? `Cash received from ${partyName} against invoice ${invoiceNo}`
+    : `Cash received from ${partyName} for outstanding`;
+
+  await conn.query(
+    `INSERT INTO ledger_entries
+     (company_id, account_id, entry_date, entry_type, amount, description, reference_no, reference_type, reference_id)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [
+      companyId,
+      accountId,
+      payment.payment_date,
+      'credit',
+      payment.amount,
+      description,
+      payment.reference_no || invoiceNo,
+      'payment',
+      paymentId,
+    ]
+  );
+}
+
 // POST /api/payments - Record a payment
 router.post('/', async (req, res) => {
   const conn = await getConnection();
@@ -71,12 +126,25 @@ router.post('/', async (req, res) => {
       else if (newAmountPaid <= 0) paymentStatus = 'unpaid';
     }
 
+    const payment = {
+      invoice_id: invoice ? invoice_id : null,
+      party_id: finalPartyId,
+      amount: paymentAmount,
+      payment_date,
+      payment_type: type,
+      payment_mode: payment_mode || 'cash',
+      reference_no: reference_no || '',
+      notes: notes || '',
+    };
+
     const [result] = await conn.query(
       `INSERT INTO payments (company_id, invoice_id, party_id, amount, payment_date, payment_type, payment_mode, reference_no, notes)
        VALUES (?,?,?,?,?,?,?,?,?)`,
-      [req.companyId, invoice ? invoice_id : null, finalPartyId, paymentAmount, payment_date, type,
-       payment_mode || 'cash', reference_no || '', notes || '']
+      [req.companyId, payment.invoice_id, payment.party_id, payment.amount, payment.payment_date, payment.payment_type,
+       payment.payment_mode, payment.reference_no, payment.notes]
     );
+
+    await postCashLedgerForPayment(conn, req.companyId, result.insertId, payment, invoice);
 
     if (invoice) {
       await conn.query(
@@ -98,6 +166,8 @@ router.post('/', async (req, res) => {
     await conn.rollback();
     console.error('Payment error:', err);
     res.status(500).json({ success: false, message: 'Server error.' });
+  } finally {
+    if (conn.release) conn.release();
   }
 });
 
@@ -148,6 +218,11 @@ router.delete('/:id', async (req, res) => {
     }
 
     const payment = payments[0];
+    await conn.query(
+      `DELETE FROM ledger_entries
+       WHERE company_id = ? AND reference_type = 'payment' AND reference_id = ?`,
+      [req.companyId, req.params.id]
+    );
     await conn.query('DELETE FROM payments WHERE id = ?', [req.params.id]);
 
     if (payment.invoice_id) {
@@ -174,6 +249,8 @@ router.delete('/:id', async (req, res) => {
   } catch (err) {
     await conn.rollback();
     res.status(500).json({ success: false, message: 'Server error.' });
+  } finally {
+    if (conn.release) conn.release();
   }
 });
 

@@ -1,12 +1,86 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/db');
+const { query, getConnection } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
 
 router.use(authenticate, attachCompany);
 
+async function cashLedgerAccountId(conn, companyId) {
+  const [accounts] = await conn.query(
+    `SELECT id FROM ledger_accounts
+     WHERE company_id = ? AND is_active = 1 AND account_type = 'cash'
+     ORDER BY id ASC LIMIT 1`,
+    [companyId]
+  );
+  if (accounts.length) return accounts[0].id;
+
+  const [result] = await conn.query(
+    `INSERT INTO ledger_accounts (company_id, name, account_type, opening_balance)
+     VALUES (?,?,?,0)`,
+    [companyId, 'Cash Ledger', 'cash']
+  );
+  return result.insertId;
+}
+
+async function syncCashLedgerPayments(companyId) {
+  const conn = await getConnection();
+  try {
+    await conn.beginTransaction();
+    const [payments] = await conn.query(
+      `SELECT p.*, i.invoice_no, pa.name as party_name
+       FROM payments p
+       LEFT JOIN invoices i ON i.id = p.invoice_id AND i.company_id = p.company_id
+       LEFT JOIN parties pa ON pa.id = p.party_id AND pa.company_id = p.company_id
+       WHERE p.company_id = ?`,
+      [companyId]
+    );
+
+    for (const payment of payments) {
+      await conn.query(
+        `DELETE FROM ledger_entries
+         WHERE company_id = ? AND reference_type = 'payment' AND reference_id = ?`,
+        [companyId, payment.id]
+      );
+
+      if ((payment.payment_mode || 'cash') !== 'cash') continue;
+
+      const accountId = await cashLedgerAccountId(conn, companyId);
+      const invoiceNo = payment.invoice_no || '';
+      const partyName = payment.party_name || 'Party';
+      const description = invoiceNo
+        ? `Cash received from ${partyName} against invoice ${invoiceNo}`
+        : `Cash received from ${partyName} for outstanding`;
+
+      await conn.query(
+        `INSERT INTO ledger_entries
+         (company_id, account_id, entry_date, entry_type, amount, description, reference_no, reference_type, reference_id)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [
+          companyId,
+          accountId,
+          payment.payment_date,
+          'credit',
+          payment.amount,
+          description,
+          payment.reference_no || invoiceNo,
+          'payment',
+          payment.id,
+        ]
+      );
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    if (conn.release) conn.release();
+  }
+}
+
 router.get('/accounts', async (req, res) => {
   try {
+    await syncCashLedgerPayments(req.companyId);
     const [accounts] = await query(
       'SELECT * FROM ledger_accounts WHERE company_id = ? AND is_active = 1 ORDER BY account_type ASC, name ASC',
       [req.companyId]
@@ -88,6 +162,7 @@ router.delete('/accounts/:id', async (req, res) => {
 
 router.get('/accounts/:id/entries', async (req, res) => {
   try {
+    await syncCashLedgerPayments(req.companyId);
     const [entries] = await query(
       `SELECT * FROM ledger_entries
        WHERE company_id = ? AND account_id = ?
@@ -125,9 +200,10 @@ router.post('/entries', async (req, res) => {
 
 router.get('/summary', async (req, res) => {
   try {
+    await syncCashLedgerPayments(req.companyId);
     const [rows] = await query(
       `SELECT la.*,
-       COALESCE(SUM(CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE -le.amount END), 0) as balance
+       la.opening_balance + COALESCE(SUM(CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE -le.amount END), 0) as balance
        FROM ledger_accounts la
        LEFT JOIN ledger_entries le ON le.account_id = la.id AND le.company_id = ?
        WHERE la.company_id = ? AND la.is_active = 1
