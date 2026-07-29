@@ -1,6 +1,6 @@
 const num = (value) => parseFloat(value || 0);
 
-function calculatePurchaseTotals(items) {
+function calculatePurchaseTotals(items, roundOff = 0) {
   let subtotal = 0;
   let totalGst = 0;
   let grandTotal = 0;
@@ -11,8 +11,9 @@ function calculatePurchaseTotals(items) {
     const damagedQty = num(item.damaged_qty);
     const expiredQty = num(item.expired_qty);
     const acceptedQty = Math.max(qty - shortQty - damagedQty - expiredQty, 0);
-    const rate = num(item.rate);
     const gstRate = num(item.gst_rate);
+    const inclusiveRate = num(item.rate_including_gst);
+    const rate = inclusiveRate > 0 ? inclusiveRate / (1 + gstRate / 100) : num(item.rate);
     const taxable = acceptedQty * rate;
     const gstAmount = taxable * gstRate / 100;
     const total = taxable + gstAmount;
@@ -29,6 +30,7 @@ function calculatePurchaseTotals(items) {
       expired_qty: expiredQty,
       accepted_qty: acceptedQty,
       rate,
+      rate_including_gst: inclusiveRate > 0 ? inclusiveRate : rate * (1 + gstRate / 100),
       gst_rate: gstRate,
       taxable_amount: taxable,
       gst_amount: gstAmount,
@@ -36,7 +38,8 @@ function calculatePurchaseTotals(items) {
     };
   });
 
-  return { normalizedItems, totals: { subtotal, totalGst, grandTotal } };
+  const roundedGrandTotal = grandTotal + num(roundOff);
+  return { normalizedItems, totals: { subtotal, totalGst, roundOff: num(roundOff), grandTotal: roundedGrandTotal } };
 }
 
 function validateInvoicePayment(invoice, amount) {

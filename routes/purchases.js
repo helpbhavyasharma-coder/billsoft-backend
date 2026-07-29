@@ -18,9 +18,9 @@ const insertPurchaseItemsAndStock = async (conn, companyId, purchaseId, purchase
   for (const item of items) {
     if (!item.product_id) continue;
     await conn.query(
-      `INSERT INTO purchase_items (purchase_id, product_id, qty, short_qty, damaged_qty, expired_qty, accepted_qty, rate, gst_rate, taxable_amount, gst_amount, total_amount, expiry_date, notes)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [purchaseId, item.product_id, item.qty, item.short_qty, item.damaged_qty, item.expired_qty, item.accepted_qty, item.rate, item.gst_rate, item.taxable_amount, item.gst_amount, item.total_amount, item.expiry_date || null, item.notes || '']
+      `INSERT INTO purchase_items (purchase_id, product_id, qty, short_qty, damaged_qty, expired_qty, accepted_qty, rate, rate_including_gst, gst_rate, taxable_amount, gst_amount, total_amount, expiry_date, notes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [purchaseId, item.product_id, item.qty, item.short_qty, item.damaged_qty, item.expired_qty, item.accepted_qty, item.rate, item.rate_including_gst, item.gst_rate, item.taxable_amount, item.gst_amount, item.total_amount, item.expiry_date || null, item.notes || '']
     );
 
     await conn.query(
@@ -130,13 +130,13 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, message: 'At least one item is required.' });
     }
 
-    const { normalizedItems, totals } = calculatePurchaseTotals(items);
+    const { normalizedItems, totals } = calculatePurchaseTotals(items, req.body.round_off);
     const { amountPaid, status } = derivePayment(totals.grandTotal, req.body.amount_paid);
 
     const [result] = await conn.query(
-      `INSERT INTO purchase_bills (company_id, supplier_id, bill_no, purchase_date, subtotal, total_gst, grand_total, amount_paid, payment_status, payment_mode, notes, status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [req.companyId, supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, amountPaid, status, payment_mode || 'cash', notes || '', 'active']
+      `INSERT INTO purchase_bills (company_id, supplier_id, bill_no, purchase_date, subtotal, total_gst, round_off, grand_total, amount_paid, payment_status, payment_mode, notes, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [req.companyId, supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.roundOff, totals.grandTotal, amountPaid, status, payment_mode || 'cash', notes || '', 'active']
     );
 
     const purchaseId = result.insertId;
@@ -175,12 +175,12 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Select product in all rows.' });
     }
 
-    const { normalizedItems, totals } = calculatePurchaseTotals(items);
+    const { normalizedItems, totals } = calculatePurchaseTotals(items, req.body.round_off);
     const { amountPaid, status } = derivePayment(totals.grandTotal, req.body.amount_paid);
     await conn.query(
-      `UPDATE purchase_bills SET supplier_id=?, bill_no=?, purchase_date=?, subtotal=?, total_gst=?, grand_total=?, amount_paid=?, payment_status=?, payment_mode=?, notes=?, updated_at=datetime('now')
+      `UPDATE purchase_bills SET supplier_id=?, bill_no=?, purchase_date=?, subtotal=?, total_gst=?, round_off=?, grand_total=?, amount_paid=?, payment_status=?, payment_mode=?, notes=?, updated_at=datetime('now')
        WHERE id=? AND company_id=?`,
-      [supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, amountPaid, status, payment_mode || 'cash', notes || '', req.params.id, req.companyId]
+      [supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.roundOff, totals.grandTotal, amountPaid, status, payment_mode || 'cash', notes || '', req.params.id, req.companyId]
     );
     await conn.query('DELETE FROM purchase_items WHERE purchase_id = ?', [req.params.id]);
     await conn.query(

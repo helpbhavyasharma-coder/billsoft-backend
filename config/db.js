@@ -138,6 +138,7 @@ if (isProduction) {
           purchase_date DATE NOT NULL,
           subtotal DECIMAL(12,2) DEFAULT 0,
           total_gst DECIMAL(12,2) DEFAULT 0,
+          round_off DECIMAL(8,2) DEFAULT 0,
           grand_total DECIMAL(12,2) DEFAULT 0,
           amount_paid DECIMAL(12,2) DEFAULT 0,
           payment_status VARCHAR(20) DEFAULT 'unpaid',
@@ -182,6 +183,7 @@ if (isProduction) {
           expired_qty DECIMAL(12,3) DEFAULT 0,
           accepted_qty DECIMAL(12,3) DEFAULT 0,
           rate DECIMAL(12,2) DEFAULT 0,
+          rate_including_gst DECIMAL(12,2) DEFAULT 0,
           gst_rate DECIMAL(5,2) DEFAULT 0,
           taxable_amount DECIMAL(12,2) DEFAULT 0,
           gst_amount DECIMAL(12,2) DEFAULT 0,
@@ -246,6 +248,8 @@ if (isProduction) {
       await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'invoice'`).catch(() => {});
       await pool.query(`ALTER TABLE purchase_bills ADD COLUMN IF NOT EXISTS amount_paid DECIMAL(12,2) DEFAULT 0`).catch(() => {});
       await pool.query(`ALTER TABLE purchase_bills ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'`).catch(() => {});
+      await pool.query(`ALTER TABLE purchase_bills ADD COLUMN IF NOT EXISTS round_off DECIMAL(8,2) DEFAULT 0`).catch(() => {});
+      await pool.query(`ALTER TABLE purchase_items ADD COLUMN IF NOT EXISTS rate_including_gst DECIMAL(12,2) DEFAULT 0`).catch(() => {});
       await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`).catch(() => {});
       await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`).catch(() => {});
       if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
@@ -446,6 +450,7 @@ if (isProduction) {
       purchase_date TEXT NOT NULL,
       subtotal REAL DEFAULT 0,
       total_gst REAL DEFAULT 0,
+      round_off REAL DEFAULT 0,
       grand_total REAL DEFAULT 0,
       amount_paid REAL DEFAULT 0,
       payment_status TEXT DEFAULT 'unpaid',
@@ -494,6 +499,7 @@ if (isProduction) {
       expired_qty REAL DEFAULT 0,
       accepted_qty REAL DEFAULT 0,
       rate REAL DEFAULT 0,
+      rate_including_gst REAL DEFAULT 0,
       gst_rate REAL DEFAULT 0,
       taxable_amount REAL DEFAULT 0,
       gst_amount REAL DEFAULT 0,
@@ -567,6 +573,8 @@ if (isProduction) {
   try { db.prepare("ALTER TABLE payments ADD COLUMN payment_type TEXT DEFAULT 'invoice'").run(); } catch {}
   try { db.prepare("ALTER TABLE purchase_bills ADD COLUMN amount_paid REAL DEFAULT 0").run(); } catch {}
   try { db.prepare("ALTER TABLE purchase_bills ADD COLUMN status TEXT DEFAULT 'active'").run(); } catch {}
+  try { db.prepare("ALTER TABLE purchase_bills ADD COLUMN round_off REAL DEFAULT 0").run(); } catch {}
+  try { db.prepare("ALTER TABLE purchase_items ADD COLUMN rate_including_gst REAL DEFAULT 0").run(); } catch {}
   try {
     if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
       const email = process.env.ADMIN_EMAIL.toLowerCase();
