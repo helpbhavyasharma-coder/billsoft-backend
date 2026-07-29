@@ -11,6 +11,30 @@ const isPostgres = !!(process.env.DATABASE_URL);
 const monthExpr = (col) => isPostgres ? `TO_CHAR(${col}, 'MM')` : `strftime('%m', ${col})`;
 const yearExpr = (col) => isPostgres ? `TO_CHAR(${col}, 'YYYY')` : `strftime('%Y', ${col})`;
 
+const getOutstandingSummary = async (companyId) => {
+  const [rows] = await query(
+    `SELECT COUNT(*) as count, COALESCE(SUM(outstanding), 0) as total FROM (
+       SELECT p.id,
+        COALESCE(p.opening_balance, 0)
+        + COALESCE(SUM(i.grand_total - i.amount_paid), 0)
+        - COALESCE(gp.general_paid, 0) as outstanding
+       FROM parties p
+       LEFT JOIN invoices i ON i.party_id = p.id AND i.company_id = ? AND i.status != 'cancelled'
+       LEFT JOIN (
+         SELECT party_id, SUM(amount) as general_paid
+         FROM payments
+         WHERE company_id = ? AND invoice_id IS NULL
+         GROUP BY party_id
+       ) gp ON gp.party_id = p.id
+       WHERE p.company_id = ? AND p.is_active = 1
+       GROUP BY p.id, p.opening_balance, gp.general_paid
+       HAVING outstanding > 0
+     ) x`,
+    [companyId, companyId, companyId]
+  );
+  return rows[0] || { count: 0, total: 0 };
+};
+
 // GET /api/reports/dashboard
 router.get('/dashboard', async (req, res) => {
   try {
@@ -96,12 +120,7 @@ router.get('/dashboard', async (req, res) => {
       thisMonth = r;
     }
 
-    // Outstanding
-    const [outstanding] = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(grand_total - amount_paid), 0) as total
-       FROM invoices WHERE company_id = ? AND payment_status IN ('unpaid','partial') AND status != 'cancelled'`,
-      [req.companyId]
-    );
+    const outstanding = await getOutstandingSummary(req.companyId);
 
     // Total year sales
     const [yearTotal] = await query(
@@ -128,7 +147,7 @@ router.get('/dashboard', async (req, res) => {
         top_customers: topCustomers,
         top_products: topProducts,
         this_month: thisMonth[0],
-        outstanding: outstanding[0],
+        outstanding,
         year_total: yearTotal[0],
         recent_invoices: recentInvoices,
         year: currentYear,
