@@ -1,12 +1,86 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/db');
+const { query, getConnection } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
 
 router.use(authenticate, attachCompany);
 
+async function syncStockMovements(companyId) {
+  const conn = await getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query(
+      `DELETE FROM stock_movements
+       WHERE company_id = ? AND reference_type IN ('invoice','purchase')`,
+      [companyId]
+    );
+
+    const [invoiceRows] = await conn.query(
+      `SELECT i.id, i.company_id, i.invoice_date, i.invoice_no, ii.product_id, ii.qty
+       FROM invoice_items ii
+       JOIN invoices i ON i.id = ii.invoice_id
+       WHERE i.company_id = ? AND i.status != 'cancelled' AND ii.product_id IS NOT NULL AND ii.qty > 0`,
+      [companyId]
+    );
+    for (const row of invoiceRows) {
+      await conn.query(
+        `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [companyId, row.product_id, row.invoice_date, 'sale_out', row.qty, 'invoice', row.id, `Invoice sale ${row.invoice_no || ''}`.trim()]
+      );
+    }
+
+    const [purchaseRows] = await conn.query(
+      `SELECT pb.id, pb.company_id, pb.purchase_date, pb.bill_no, pi.product_id, pi.qty, pi.short_qty, pi.damaged_qty, pi.expired_qty, pi.accepted_qty
+       FROM purchase_items pi
+       JOIN purchase_bills pb ON pb.id = pi.purchase_id
+       WHERE pb.company_id = ? AND pi.product_id IS NOT NULL`,
+      [companyId]
+    );
+    for (const row of purchaseRows) {
+      const accepted = Math.max(
+        parseFloat(row.accepted_qty || 0),
+        parseFloat(row.qty || 0) - parseFloat(row.short_qty || 0) - parseFloat(row.damaged_qty || 0) - parseFloat(row.expired_qty || 0)
+      );
+      const damaged = parseFloat(row.damaged_qty || 0);
+      const expired = parseFloat(row.expired_qty || 0);
+      const billNote = row.bill_no ? ` ${row.bill_no}` : '';
+
+      if (accepted > 0) {
+        await conn.query(
+          `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [companyId, row.product_id, row.purchase_date, 'purchase_in', accepted, 'purchase', row.id, `Purchase${billNote}`]
+        );
+      }
+      if (damaged > 0) {
+        await conn.query(
+          `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [companyId, row.product_id, row.purchase_date, 'damage', damaged, 'purchase', row.id, `Damaged in purchase${billNote}`]
+        );
+      }
+      if (expired > 0) {
+        await conn.query(
+          `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [companyId, row.product_id, row.purchase_date, 'expiry', expired, 'purchase', row.id, `Expired in purchase${billNote}`]
+        );
+      }
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    if (conn.release) conn.release();
+  }
+}
+
 router.get('/summary', async (req, res) => {
   try {
+    await syncStockMovements(req.companyId);
     const [rows] = await query(
       `SELECT pr.id, pr.name, pr.category, pr.unit,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'purchase_in' THEN sm.qty ELSE 0 END), 0) as purchased_qty,
@@ -40,6 +114,7 @@ router.get('/summary', async (req, res) => {
 
 router.get('/movements/:productId', async (req, res) => {
   try {
+    await syncStockMovements(req.companyId);
     const [rows] = await query(
       `SELECT * FROM stock_movements
        WHERE company_id = ? AND product_id = ?
