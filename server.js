@@ -11,11 +11,16 @@ const PORT = process.env.PORT || 5000;
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-// CORS: echo request Origin when present (needed with credentials + browsers hitting Railway from softbill etc.)
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 app.use(cors({
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    callback(null, origin);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
 }));

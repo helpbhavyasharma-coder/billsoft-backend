@@ -45,6 +45,47 @@ router.post('/accounts', async (req, res) => {
   }
 });
 
+router.put('/accounts/:id', async (req, res) => {
+  try {
+    const { name, account_type, account_no, ifsc, branch, opening_balance } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: 'Account name is required.' });
+
+    const [existing] = await query(
+      'SELECT id FROM ledger_accounts WHERE id = ? AND company_id = ? AND is_active = 1',
+      [req.params.id, req.companyId]
+    );
+    if (existing.length === 0) return res.status(404).json({ success: false, message: 'Ledger account not found.' });
+
+    await query(
+      `UPDATE ledger_accounts
+       SET name=?, account_type=?, account_no=?, ifsc=?, branch=?, opening_balance=?
+       WHERE id=? AND company_id=?`,
+      [name, account_type || 'bank', account_no || '', ifsc || '', branch || '', opening_balance || 0, req.params.id, req.companyId]
+    );
+
+    res.json({ success: true, message: 'Account updated.' });
+  } catch (err) {
+    console.error('Ledger account update error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+router.delete('/accounts/:id', async (req, res) => {
+  try {
+    const [existing] = await query(
+      'SELECT id FROM ledger_accounts WHERE id = ? AND company_id = ? AND is_active = 1',
+      [req.params.id, req.companyId]
+    );
+    if (existing.length === 0) return res.status(404).json({ success: false, message: 'Ledger account not found.' });
+
+    await query('UPDATE ledger_accounts SET is_active = 0 WHERE id = ? AND company_id = ?', [req.params.id, req.companyId]);
+    res.json({ success: true, message: 'Account deleted.' });
+  } catch (err) {
+    console.error('Ledger account delete error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
 router.get('/accounts/:id/entries', async (req, res) => {
   try {
     const [entries] = await query(

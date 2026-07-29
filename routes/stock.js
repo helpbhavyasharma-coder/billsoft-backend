@@ -10,7 +10,7 @@ router.get('/summary', async (req, res) => {
     const [rows] = await query(
       `SELECT pr.id, pr.name, pr.category, pr.unit,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'purchase_in' THEN sm.qty ELSE 0 END), 0) as purchased_qty,
-       COALESCE((SELECT SUM(ii.qty) FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE ii.product_id = pr.id AND i.company_id = ? AND i.status != 'cancelled'), 0) as sold_qty,
+       COALESCE(SUM(CASE WHEN sm.movement_type = 'sale_out' THEN sm.qty ELSE 0 END), 0) as sold_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'damage' THEN sm.qty ELSE 0 END), 0) as damaged_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'expiry' THEN sm.qty ELSE 0 END), 0) as expired_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'adjustment_in' THEN sm.qty WHEN sm.movement_type = 'adjustment_out' THEN -sm.qty ELSE 0 END), 0) as adjustment_qty
@@ -19,7 +19,7 @@ router.get('/summary', async (req, res) => {
        WHERE pr.company_id = ? AND pr.is_active = 1
        GROUP BY pr.id, pr.name, pr.category, pr.unit
        ORDER BY COALESCE(pr.category, ''), pr.name`,
-      [req.companyId, req.companyId, req.companyId]
+      [req.companyId, req.companyId]
     );
 
     const stock = rows.map((row) => {

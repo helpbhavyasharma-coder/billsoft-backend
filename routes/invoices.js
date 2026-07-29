@@ -232,6 +232,29 @@ const calcItems = (items, isInterstate) => {
   };
 };
 
+const syncInvoiceStockMovements = async (conn, companyId, invoiceId, invoiceDate, items) => {
+  await conn.query(
+    "DELETE FROM stock_movements WHERE company_id = ? AND reference_type = 'invoice' AND reference_id = ?",
+    [companyId, invoiceId]
+  );
+
+  const byProduct = new Map();
+  for (const item of items) {
+    if (!item.product_id) continue;
+    const qty = parseFloat(item.qty || 0);
+    if (qty <= 0) continue;
+    byProduct.set(item.product_id, (byProduct.get(item.product_id) || 0) + qty);
+  }
+
+  for (const [productId, qty] of byProduct.entries()) {
+    await conn.query(
+      `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [companyId, productId, invoiceDate, 'sale_out', qty, 'invoice', invoiceId, 'Invoice sale']
+    );
+  }
+};
+
 // POST /api/invoices
 router.post('/', async (req, res) => {
   const conn = await getConnection();
@@ -292,6 +315,8 @@ router.post('/', async (req, res) => {
       );
     }
 
+    await syncInvoiceStockMovements(conn, req.companyId, invoiceId, invoice_date, processed);
+
     // Update counter to last used number + 1
     const lastNum = parseInt(finalInvoiceNo.split('/').pop());
     if (!isNaN(lastNum)) {
@@ -328,7 +353,7 @@ router.put('/:id', async (req, res) => {
     await conn.beginTransaction();
 
     const [existing] = await conn.query(
-      'SELECT id FROM invoices WHERE id = ? AND company_id = ?',
+      'SELECT id, amount_paid FROM invoices WHERE id = ? AND company_id = ?',
       [req.params.id, req.companyId]
     );
     if (existing.length === 0) {
@@ -341,6 +366,11 @@ router.put('/:id', async (req, res) => {
     const isInterstate = supply_type === 'interstate';
     const validItems = (items || []).filter(i => i.description);
     const { processed, totals } = calcItems(validItems, isInterstate);
+    const paid = amount_paid !== undefined && amount_paid !== null ? parseFloat(amount_paid || 0) : parseFloat(existing[0].amount_paid || 0);
+    if (paid > totals.grandTotal) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: 'Paid amount cannot be greater than invoice total.' });
+    }
 
     await conn.query(
       `UPDATE invoices SET party_id=?, invoice_date=?, due_date=?, invoice_type=?, supply_type=?,
@@ -353,7 +383,7 @@ router.put('/:id', async (req, res) => {
         totals.subtotal, totals.totalDiscount, totals.taxableAmount,
         totals.totalCgst, totals.totalSgst, totals.totalIgst,
         totals.roundOff, totals.grandTotal, notes || '', terms || '',
-        status || 'draft', payment_status || null, amount_paid || null,
+        status || 'draft', payment_status || null, amount_paid ?? null,
         req.params.id,
       ]
     );
@@ -368,6 +398,15 @@ router.put('/:id', async (req, res) => {
          item.rate, item.total_sale, item.discount, item.taxable_amount,
          item.gst_rate, item.cgst, item.sgst, item.igst, item.sort_order]
       );
+    }
+
+    if ((status || 'draft') === 'cancelled') {
+      await conn.query(
+        "DELETE FROM stock_movements WHERE company_id = ? AND reference_type = 'invoice' AND reference_id = ?",
+        [req.companyId, req.params.id]
+      );
+    } else {
+      await syncInvoiceStockMovements(conn, req.companyId, req.params.id, invoice_date, processed);
     }
 
     await conn.commit();
@@ -387,40 +426,33 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/invoices/:id
+// DELETE /api/invoices/:id - keep invoice number/history; mark as cancelled.
 router.delete('/:id', async (req, res) => {
+  const conn = await getConnection();
   try {
-    const [existing] = await query(
+    await conn.beginTransaction();
+    const [existing] = await conn.query(
       'SELECT id, invoice_no FROM invoices WHERE id = ? AND company_id = ?',
       [req.params.id, req.companyId]
     );
-    if (existing.length === 0) return res.status(404).json({ success: false, message: 'Invoice not found.' });
-
-    const deletedInvoiceNo = existing[0].invoice_no;
-
-    await query('DELETE FROM invoices WHERE id = ? AND company_id = ?', [req.params.id, req.companyId]);
-
-    // Smart counter reset - keep it above every historical invoice number.
-    const [lastInvoice] = await query(
-      `SELECT invoice_no FROM invoices
-       WHERE company_id = ?
-       ORDER BY id DESC LIMIT 1`,
-      [req.companyId]
-    );
-
-    if (lastInvoice.length === 0) {
-      // No invoices at all - reset to 1
-      await query('UPDATE companies SET invoice_counter = 1 WHERE id = ?', [req.companyId]);
-    } else {
-      const parts = lastInvoice[0].invoice_no.split('/');
-      const lastNum = parseInt(parts[parts.length - 1]);
-      if (!isNaN(lastNum)) {
-        await query('UPDATE companies SET invoice_counter = ? WHERE id = ?', [lastNum + 1, req.companyId]);
-      }
+    if (existing.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, message: 'Invoice not found.' });
     }
 
-    res.json({ success: true, message: 'Invoice deleted.', deleted_no: deletedInvoiceNo });
+    await conn.query(
+      "UPDATE invoices SET status = 'cancelled', payment_status = 'unpaid', amount_paid = 0, updated_at = datetime('now') WHERE id = ? AND company_id = ?",
+      [req.params.id, req.companyId]
+    );
+    await conn.query(
+      "DELETE FROM stock_movements WHERE company_id = ? AND reference_type = 'invoice' AND reference_id = ?",
+      [req.companyId, req.params.id]
+    );
+    await conn.commit();
+
+    res.json({ success: true, message: 'Invoice cancelled.', cancelled_no: existing[0].invoice_no });
   } catch (err) {
+    await conn.rollback();
     console.error('Delete error:', err);
     res.status(500).json({ success: false, message: 'Server error: ' + err.message });
   }

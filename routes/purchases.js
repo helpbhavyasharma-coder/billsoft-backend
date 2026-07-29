@@ -2,10 +2,42 @@ const express = require('express');
 const router = express.Router();
 const { query, getConnection } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
+const { calculatePurchaseTotals } = require('../utils/accountingRules');
 
 router.use(authenticate, attachCompany);
 
-const num = (value) => parseFloat(value || 0);
+const insertPurchaseItemsAndStock = async (conn, companyId, purchaseId, purchaseDate, items) => {
+  for (const item of items) {
+    if (!item.product_id) continue;
+    await conn.query(
+      `INSERT INTO purchase_items (purchase_id, product_id, qty, short_qty, damaged_qty, expired_qty, accepted_qty, rate, gst_rate, taxable_amount, gst_amount, total_amount, expiry_date, notes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [purchaseId, item.product_id, item.qty, item.short_qty, item.damaged_qty, item.expired_qty, item.accepted_qty, item.rate, item.gst_rate, item.taxable_amount, item.gst_amount, item.total_amount, item.expiry_date || null, item.notes || '']
+    );
+
+    await conn.query(
+      `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [companyId, item.product_id, purchaseDate, 'purchase_in', item.accepted_qty, 'purchase', purchaseId, item.notes || '']
+    );
+
+    if (item.damaged_qty > 0) {
+      await conn.query(
+        `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [companyId, item.product_id, purchaseDate, 'damage', item.damaged_qty, 'purchase', purchaseId, item.notes || '']
+      );
+    }
+
+    if (item.expired_qty > 0) {
+      await conn.query(
+        `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [companyId, item.product_id, purchaseDate, 'expiry', item.expired_qty, 'purchase', purchaseId, item.notes || '']
+      );
+    }
+  }
+};
 
 router.get('/', async (req, res) => {
   try {
@@ -66,71 +98,97 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, message: 'At least one item is required.' });
     }
 
-    let subtotal = 0;
-    let totalGst = 0;
-    let grandTotal = 0;
-
-    const normalizedItems = items.map((item) => {
-      const qty = num(item.qty);
-      const shortQty = num(item.short_qty);
-      const damagedQty = num(item.damaged_qty);
-      const expiredQty = num(item.expired_qty);
-      const acceptedQty = Math.max(qty - shortQty - damagedQty - expiredQty, 0);
-      const rate = num(item.rate);
-      const gstRate = num(item.gst_rate);
-      const taxable = acceptedQty * rate;
-      const gstAmount = taxable * gstRate / 100;
-      const total = taxable + gstAmount;
-      subtotal += taxable;
-      totalGst += gstAmount;
-      grandTotal += total;
-      return { ...item, qty, short_qty: shortQty, damaged_qty: damagedQty, expired_qty: expiredQty, accepted_qty: acceptedQty, rate, gst_rate: gstRate, taxable_amount: taxable, gst_amount: gstAmount, total_amount: total };
-    });
+    const { normalizedItems, totals } = calculatePurchaseTotals(items);
 
     const [result] = await conn.query(
       `INSERT INTO purchase_bills (company_id, supplier_id, bill_no, purchase_date, subtotal, total_gst, grand_total, payment_status, payment_mode, notes)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [req.companyId, supplier_id || null, bill_no || '', purchase_date, subtotal, totalGst, grandTotal, payment_status || 'unpaid', payment_mode || 'cash', notes || '']
+      [req.companyId, supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, payment_status || 'unpaid', payment_mode || 'cash', notes || '']
     );
 
     const purchaseId = result.insertId;
-
-    for (const item of normalizedItems) {
-      if (!item.product_id) continue;
-      await conn.query(
-        `INSERT INTO purchase_items (purchase_id, product_id, qty, short_qty, damaged_qty, expired_qty, accepted_qty, rate, gst_rate, taxable_amount, gst_amount, total_amount, expiry_date, notes)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [purchaseId, item.product_id, item.qty, item.short_qty, item.damaged_qty, item.expired_qty, item.accepted_qty, item.rate, item.gst_rate, item.taxable_amount, item.gst_amount, item.total_amount, item.expiry_date || null, item.notes || '']
-      );
-
-      await conn.query(
-        `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
-         VALUES (?,?,?,?,?,?,?,?)`,
-        [req.companyId, item.product_id, purchase_date, 'purchase_in', item.accepted_qty, 'purchase', purchaseId, item.notes || '']
-      );
-
-      if (item.damaged_qty > 0) {
-        await conn.query(
-          `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
-           VALUES (?,?,?,?,?,?,?,?)`,
-          [req.companyId, item.product_id, purchase_date, 'damage', item.damaged_qty, 'purchase', purchaseId, item.notes || '']
-        );
-      }
-
-      if (item.expired_qty > 0) {
-        await conn.query(
-          `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
-           VALUES (?,?,?,?,?,?,?,?)`,
-          [req.companyId, item.product_id, purchase_date, 'expiry', item.expired_qty, 'purchase', purchaseId, item.notes || '']
-        );
-      }
-    }
+    await insertPurchaseItemsAndStock(conn, req.companyId, purchaseId, purchase_date, normalizedItems);
 
     await conn.commit();
     res.status(201).json({ success: true, message: 'Purchase bill created.', purchase_id: purchaseId });
   } catch (err) {
     await conn.rollback();
     console.error('Purchase create error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+router.put('/:id', async (req, res) => {
+  const conn = await getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [existing] = await conn.query(
+      'SELECT id FROM purchase_bills WHERE id = ? AND company_id = ?',
+      [req.params.id, req.companyId]
+    );
+    if (existing.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, message: 'Purchase bill not found.' });
+    }
+
+    const { supplier_id, bill_no, purchase_date, payment_status, payment_mode, notes, items } = req.body;
+    if (!purchase_date) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: 'Purchase date is required.' });
+    }
+    if (!Array.isArray(items) || items.length === 0 || items.some((item) => !item.product_id)) {
+      await conn.rollback();
+      return res.status(400).json({ success: false, message: 'Select product in all rows.' });
+    }
+
+    const { normalizedItems, totals } = calculatePurchaseTotals(items);
+    await conn.query(
+      `UPDATE purchase_bills SET supplier_id=?, bill_no=?, purchase_date=?, subtotal=?, total_gst=?, grand_total=?, payment_status=?, payment_mode=?, notes=?, updated_at=datetime('now')
+       WHERE id=? AND company_id=?`,
+      [supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, payment_status || 'unpaid', payment_mode || 'cash', notes || '', req.params.id, req.companyId]
+    );
+    await conn.query('DELETE FROM purchase_items WHERE purchase_id = ?', [req.params.id]);
+    await conn.query(
+      "DELETE FROM stock_movements WHERE company_id = ? AND reference_type = 'purchase' AND reference_id = ?",
+      [req.companyId, req.params.id]
+    );
+    await insertPurchaseItemsAndStock(conn, req.companyId, req.params.id, purchase_date, normalizedItems);
+
+    await conn.commit();
+    res.json({ success: true, message: 'Purchase bill updated.', purchase_id: Number(req.params.id) });
+  } catch (err) {
+    await conn.rollback();
+    console.error('Purchase update error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  const conn = await getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [existing] = await conn.query(
+      'SELECT id FROM purchase_bills WHERE id = ? AND company_id = ?',
+      [req.params.id, req.companyId]
+    );
+    if (existing.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ success: false, message: 'Purchase bill not found.' });
+    }
+
+    await conn.query(
+      "DELETE FROM stock_movements WHERE company_id = ? AND reference_type = 'purchase' AND reference_id = ?",
+      [req.companyId, req.params.id]
+    );
+    await conn.query('DELETE FROM purchase_bills WHERE id = ? AND company_id = ?', [req.params.id, req.companyId]);
+
+    await conn.commit();
+    res.json({ success: true, message: 'Purchase bill deleted.' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('Purchase delete error:', err);
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 });

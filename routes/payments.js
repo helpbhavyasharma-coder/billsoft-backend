@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query, getConnection } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
+const { validateInvoicePayment } = require('../utils/accountingRules');
 
 router.use(authenticate, attachCompany);
 
@@ -13,9 +14,10 @@ router.post('/', async (req, res) => {
 
     const { invoice_id, party_id, payment_type, amount, payment_date, payment_mode, reference_no, notes } = req.body;
     const type = payment_type || (invoice_id ? 'invoice' : 'general');
-    if (!amount || !payment_date) {
+    const paymentAmount = parseFloat(amount || 0);
+    if (!paymentAmount || paymentAmount <= 0 || !payment_date) {
       await conn.rollback();
-      return res.status(400).json({ success: false, message: 'Amount and date required.' });
+      return res.status(400).json({ success: false, message: 'Positive amount and date required.' });
     }
 
     let invoice = null;
@@ -57,8 +59,13 @@ router.post('/', async (req, res) => {
     let newAmountPaid = null;
     let paymentStatus = null;
     if (invoice) {
-      newAmountPaid = parseFloat(invoice.amount_paid || 0) + parseFloat(amount);
+      const paymentValidation = validateInvoicePayment(invoice, paymentAmount);
+      if (!paymentValidation.ok) {
+        await conn.rollback();
+        return res.status(400).json({ success: false, message: paymentValidation.message });
+      }
       const grandTotal = parseFloat(invoice.grand_total);
+      newAmountPaid = paymentValidation.newAmountPaid;
       paymentStatus = 'partial';
       if (newAmountPaid >= grandTotal) paymentStatus = 'paid';
       else if (newAmountPaid <= 0) paymentStatus = 'unpaid';
@@ -67,7 +74,7 @@ router.post('/', async (req, res) => {
     const [result] = await conn.query(
       `INSERT INTO payments (company_id, invoice_id, party_id, amount, payment_date, payment_type, payment_mode, reference_no, notes)
        VALUES (?,?,?,?,?,?,?,?,?)`,
-      [req.companyId, invoice ? invoice_id : null, finalPartyId, amount, payment_date, type,
+      [req.companyId, invoice ? invoice_id : null, finalPartyId, paymentAmount, payment_date, type,
        payment_mode || 'cash', reference_no || '', notes || '']
     );
 

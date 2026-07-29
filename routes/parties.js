@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../config/db');
 const { authenticate, attachCompany } = require('../middleware/auth');
+const { normalizeGstin, isValidGstinOrNA } = require('../utils/validators');
 
 router.use(authenticate, attachCompany);
 
@@ -49,10 +50,11 @@ router.post('/', async (req, res) => {
   try {
     const { name, address, city, state, mobile, email, gst_no, party_type, opening_balance } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'Party name is required.' });
+    if (!isValidGstinOrNA(gst_no)) return res.status(400).json({ success: false, message: 'Enter a valid GSTIN or NA.' });
 
     const [result] = await query(
       'INSERT INTO parties (company_id, name, address, city, state, mobile, email, gst_no, party_type, opening_balance) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      [req.companyId, name, address || '', city || '', state || '', mobile || '', email || '', gst_no || 'NA', party_type || 'customer', opening_balance || 0]
+      [req.companyId, name, address || '', city || '', state || '', mobile || '', email || '', normalizeGstin(gst_no) || 'NA', party_type || 'customer', opening_balance || 0]
     );
 
     const [created] = await query('SELECT * FROM parties WHERE id = ?', [result.insertId]);
@@ -67,6 +69,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { name, address, city, state, mobile, email, gst_no, party_type, opening_balance } = req.body;
+    if (!isValidGstinOrNA(gst_no)) return res.status(400).json({ success: false, message: 'Enter a valid GSTIN or NA.' });
     const [existing] = await query(
       'SELECT id FROM parties WHERE id = ? AND company_id = ?',
       [req.params.id, req.companyId]
@@ -75,7 +78,7 @@ router.put('/:id', async (req, res) => {
 
     await query(
       'UPDATE parties SET name=?, address=?, city=?, state=?, mobile=?, email=?, gst_no=?, party_type=?, opening_balance=?, updated_at=datetime(\'now\') WHERE id=?',
-      [name, address || '', city || '', state || '', mobile || '', email || '', gst_no || 'NA', party_type || 'customer', opening_balance || 0, req.params.id]
+      [name, address || '', city || '', state || '', mobile || '', email || '', normalizeGstin(gst_no) || 'NA', party_type || 'customer', opening_balance || 0, req.params.id]
     );
 
     const [updated] = await query('SELECT * FROM parties WHERE id = ?', [req.params.id]);

@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { query } = require('../config/db');
 const { authenticate } = require('../middleware/auth');
+const { normalizeGstin, isValidGstinOrNA } = require('../utils/validators');
 
 // Use memory storage - file goes to Cloudinary, not disk
 const storage = multer.memoryStorage();
@@ -42,6 +43,10 @@ router.post('/', authenticate, upload.single('logo'), async (req, res) => {
     if (!company_name) {
       return res.status(400).json({ success: false, message: 'Company name is required.' });
     }
+    if (!isValidGstinOrNA(gst_no)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid GSTIN or leave it blank.' });
+    }
+    const normalizedGstin = normalizeGstin(gst_no);
 
     let logo_url = null;
 
@@ -79,7 +84,7 @@ router.post('/', authenticate, upload.single('logo'), async (req, res) => {
       const logoField = logo_url ? ', logo_url = ?' : '';
       const params = [
         company_name, address || '', city || '', state || '', pincode || '',
-        gst_no || '', fssai_no || '', pan_no || '', mobile || '', email || '', website || '',
+        normalizedGstin || '', fssai_no || '', pan_no || '', mobile || '', email || '', website || '',
         bank_name || '', bank_account_no || '', bank_ifsc || '', bank_branch || '', upi_id || '',
         invoice_prefix || 'INV', financial_year || '26-27', terms || '',
         business_type || 'general',
@@ -111,7 +116,7 @@ router.post('/', authenticate, upload.single('logo'), async (req, res) => {
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           req.user.id, company_name, address || '', city || '', state || '', pincode || '',
-          gst_no || '', fssai_no || '', pan_no || '', mobile || '', email || '', website || '',
+          normalizedGstin || '', fssai_no || '', pan_no || '', mobile || '', email || '', website || '',
           logo_url || null, bank_name || '', bank_account_no || '', bank_ifsc || '',
           bank_branch || '', upi_id || '', invoice_prefix || 'INV',
           financial_year || '26-27',
