@@ -46,7 +46,8 @@ function validateInvoicePayment(invoice, amount) {
 
   const grandTotal = num(invoice?.grand_total);
   const currentPaid = num(invoice?.amount_paid);
-  const outstanding = Math.max(grandTotal - currentPaid, 0);
+  const returned = num(invoice?.goods_return_total);
+  const outstanding = Math.max(grandTotal - currentPaid - returned, 0);
   if (paymentAmount > outstanding) {
     return {
       ok: false,

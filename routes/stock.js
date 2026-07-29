@@ -11,7 +11,7 @@ async function syncStockMovements(companyId) {
     await conn.beginTransaction();
     await conn.query(
       `DELETE FROM stock_movements
-       WHERE company_id = ? AND reference_type IN ('invoice','purchase')`,
+       WHERE company_id = ? AND reference_type IN ('invoice','purchase','goods_return')`,
       [companyId]
     );
 
@@ -69,6 +69,21 @@ async function syncStockMovements(companyId) {
       }
     }
 
+    const [returnRows] = await conn.query(
+      `SELECT gr.id, gr.company_id, gr.return_date, gr.return_no, gri.product_id, gri.qty
+       FROM goods_return_items gri
+       JOIN goods_returns gr ON gr.id = gri.return_id
+       WHERE gr.company_id = ? AND gri.product_id IS NOT NULL AND gri.qty > 0`,
+      [companyId]
+    ).catch(() => [[]]);
+    for (const row of returnRows) {
+      await conn.query(
+        `INSERT INTO stock_movements (company_id, product_id, movement_date, movement_type, qty, reference_type, reference_id, notes)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [companyId, row.product_id, row.return_date, 'sale_return_in', row.qty, 'goods_return', row.id, `Goods return ${row.return_no || ''}`.trim()]
+      );
+    }
+
     await conn.commit();
   } catch (err) {
     await conn.rollback();
@@ -85,6 +100,7 @@ router.get('/summary', async (req, res) => {
       `SELECT pr.id, pr.name, pr.category, pr.unit,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'purchase_in' THEN sm.qty ELSE 0 END), 0) as purchased_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'sale_out' THEN sm.qty ELSE 0 END), 0) as sold_qty,
+       COALESCE(SUM(CASE WHEN sm.movement_type = 'sale_return_in' THEN sm.qty ELSE 0 END), 0) as returned_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'damage' THEN sm.qty ELSE 0 END), 0) as damaged_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'expiry' THEN sm.qty ELSE 0 END), 0) as expired_qty,
        COALESCE(SUM(CASE WHEN sm.movement_type = 'adjustment_in' THEN sm.qty WHEN sm.movement_type = 'adjustment_out' THEN -sm.qty ELSE 0 END), 0) as adjustment_qty
@@ -99,10 +115,11 @@ router.get('/summary', async (req, res) => {
     const stock = rows.map((row) => {
       const purchased = parseFloat(row.purchased_qty || 0);
       const sold = parseFloat(row.sold_qty || 0);
+      const returned = parseFloat(row.returned_qty || 0);
       const damaged = parseFloat(row.damaged_qty || 0);
       const expired = parseFloat(row.expired_qty || 0);
       const adjustment = parseFloat(row.adjustment_qty || 0);
-      return { ...row, current_stock: purchased - sold - damaged - expired + adjustment };
+      return { ...row, current_stock: purchased - sold + returned - damaged - expired + adjustment };
     });
 
     res.json({ success: true, stock });

@@ -5,19 +5,29 @@ const { authenticate, attachCompany } = require('../middleware/auth');
 
 router.use(authenticate, attachCompany);
 
-async function cashLedgerAccountId(conn, companyId) {
+function paymentLedgerConfig(mode = 'cash') {
+  const normalized = String(mode || 'cash').toLowerCase();
+  if (normalized === 'bank' || normalized === 'bank_transfer') return { type: 'bank', name: 'Bank Ledger', label: 'Bank' };
+  if (normalized === 'upi') return { type: 'upi', name: 'UPI Ledger', label: 'UPI' };
+  if (normalized === 'cheque') return { type: 'bank', name: 'Cheque Ledger', label: 'Cheque' };
+  if (normalized === 'other') return { type: 'other', name: 'Other Receipts Ledger', label: 'Other' };
+  return { type: 'cash', name: 'Cash Ledger', label: 'Cash' };
+}
+
+async function paymentLedgerAccountId(conn, companyId, mode) {
+  const config = paymentLedgerConfig(mode);
   const [accounts] = await conn.query(
     `SELECT id FROM ledger_accounts
-     WHERE company_id = ? AND is_active = 1 AND account_type = 'cash'
+     WHERE company_id = ? AND is_active = 1 AND account_type = ? AND name = ?
      ORDER BY id ASC LIMIT 1`,
-    [companyId]
+    [companyId, config.type, config.name]
   );
   if (accounts.length) return accounts[0].id;
 
   const [result] = await conn.query(
     `INSERT INTO ledger_accounts (company_id, name, account_type, opening_balance)
      VALUES (?,?,?,0)`,
-    [companyId, 'Cash Ledger', 'cash']
+    [companyId, config.name, config.type]
   );
   return result.insertId;
 }
@@ -42,14 +52,13 @@ async function syncCashLedgerPayments(companyId) {
         [companyId, payment.id]
       );
 
-      if ((payment.payment_mode || 'cash') !== 'cash') continue;
-
-      const accountId = await cashLedgerAccountId(conn, companyId);
+      const accountId = await paymentLedgerAccountId(conn, companyId, payment.payment_mode);
+      const modeLabel = paymentLedgerConfig(payment.payment_mode).label;
       const invoiceNo = payment.invoice_no || '';
       const partyName = payment.party_name || 'Party';
       const description = invoiceNo
-        ? `Cash received from ${partyName} against invoice ${invoiceNo}`
-        : `Cash received from ${partyName} for outstanding`;
+        ? `${modeLabel} received from ${partyName} against invoice ${invoiceNo}`
+        : `${modeLabel} received from ${partyName} for outstanding`;
 
       await conn.query(
         `INSERT INTO ledger_entries
@@ -65,6 +74,42 @@ async function syncCashLedgerPayments(companyId) {
           payment.reference_no || invoiceNo,
           'payment',
           payment.id,
+        ]
+      );
+    }
+
+    const [purchases] = await conn.query(
+      `SELECT pb.*, pa.name as supplier_name
+       FROM purchase_bills pb
+       LEFT JOIN parties pa ON pa.id = pb.supplier_id AND pa.company_id = pb.company_id
+       WHERE pb.company_id = ? AND COALESCE(pb.status, 'active') != 'cancelled'`,
+      [companyId]
+    );
+    for (const purchase of purchases) {
+      await conn.query(
+        `DELETE FROM ledger_entries
+         WHERE company_id = ? AND reference_type = 'purchase_payment' AND reference_id = ?`,
+        [companyId, purchase.id]
+      );
+      const paid = parseFloat(purchase.amount_paid || 0);
+      if (!paid) continue;
+      const accountId = await paymentLedgerAccountId(conn, companyId, purchase.payment_mode);
+      const modeLabel = paymentLedgerConfig(purchase.payment_mode).label;
+      const supplierName = purchase.supplier_name || 'Supplier';
+      await conn.query(
+        `INSERT INTO ledger_entries
+         (company_id, account_id, entry_date, entry_type, amount, description, reference_no, reference_type, reference_id)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [
+          companyId,
+          accountId,
+          purchase.purchase_date,
+          'debit',
+          paid,
+          `${modeLabel} paid to ${supplierName} against purchase ${purchase.bill_no || purchase.id}`,
+          purchase.bill_no || '',
+          'purchase_payment',
+          purchase.id,
         ]
       );
     }

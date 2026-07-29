@@ -6,19 +6,29 @@ const { validateInvoicePayment } = require('../utils/accountingRules');
 
 router.use(authenticate, attachCompany);
 
-async function cashLedgerAccountId(conn, companyId) {
+function paymentLedgerConfig(mode = 'cash') {
+  const normalized = String(mode || 'cash').toLowerCase();
+  if (normalized === 'bank' || normalized === 'bank_transfer') return { type: 'bank', name: 'Bank Ledger', label: 'Bank' };
+  if (normalized === 'upi') return { type: 'upi', name: 'UPI Ledger', label: 'UPI' };
+  if (normalized === 'cheque') return { type: 'bank', name: 'Cheque Ledger', label: 'Cheque' };
+  if (normalized === 'other') return { type: 'other', name: 'Other Receipts Ledger', label: 'Other' };
+  return { type: 'cash', name: 'Cash Ledger', label: 'Cash' };
+}
+
+async function paymentLedgerAccountId(conn, companyId, mode) {
+  const config = paymentLedgerConfig(mode);
   const [accounts] = await conn.query(
     `SELECT id FROM ledger_accounts
-     WHERE company_id = ? AND is_active = 1 AND account_type = 'cash'
+     WHERE company_id = ? AND is_active = 1 AND account_type = ? AND name = ?
      ORDER BY id ASC LIMIT 1`,
-    [companyId]
+    [companyId, config.type, config.name]
   );
   if (accounts.length) return accounts[0].id;
 
   const [result] = await conn.query(
     `INSERT INTO ledger_accounts (company_id, name, account_type, opening_balance)
      VALUES (?,?,?,0)`,
-    [companyId, 'Cash Ledger', 'cash']
+    [companyId, config.name, config.type]
   );
   return result.insertId;
 }
@@ -30,18 +40,17 @@ async function postCashLedgerForPayment(conn, companyId, paymentId, payment, inv
     [companyId, paymentId]
   );
 
-  if ((payment.payment_mode || 'cash') !== 'cash') return;
-
   const [parties] = await conn.query(
     'SELECT name FROM parties WHERE id = ? AND company_id = ?',
     [payment.party_id, companyId]
   );
-  const accountId = await cashLedgerAccountId(conn, companyId);
+  const accountId = await paymentLedgerAccountId(conn, companyId, payment.payment_mode);
+  const modeLabel = paymentLedgerConfig(payment.payment_mode).label;
   const partyName = parties[0]?.name || 'Party';
   const invoiceNo = invoice?.invoice_no || '';
   const description = invoiceNo
-    ? `Cash received from ${partyName} against invoice ${invoiceNo}`
-    : `Cash received from ${partyName} for outstanding`;
+    ? `${modeLabel} received from ${partyName} against invoice ${invoiceNo}`
+    : `${modeLabel} received from ${partyName} for outstanding`;
 
   await conn.query(
     `INSERT INTO ledger_entries
@@ -85,7 +94,8 @@ router.post('/', async (req, res) => {
       }
 
       const [invoices] = await conn.query(
-        'SELECT * FROM invoices WHERE id = ? AND company_id = ?',
+        `SELECT i.*, COALESCE((SELECT SUM(amount) FROM goods_returns WHERE invoice_id = i.id), 0) as goods_return_total
+         FROM invoices i WHERE i.id = ? AND i.company_id = ?`,
         [invoice_id, req.companyId]
       );
       if (invoices.length === 0) {
@@ -265,21 +275,27 @@ router.get('/outstanding', async (req, res) => {
        COALESCE(SUM(i.amount_paid), 0) + COALESCE(gp.general_paid, 0) as total_paid,
        COALESCE(SUM(i.grand_total - i.amount_paid), 0) as invoice_outstanding,
        COALESCE(gp.general_paid, 0) as general_paid,
-       COALESCE(p.opening_balance, 0) + COALESCE(SUM(i.grand_total - i.amount_paid), 0) - COALESCE(gp.general_paid, 0) as outstanding
+       COALESCE(gr.goods_return_total, 0) as goods_return_total,
+       COALESCE(p.opening_balance, 0) + COALESCE(SUM(i.grand_total - i.amount_paid), 0) - COALESCE(gp.general_paid, 0) - COALESCE(gr.goods_return_total, 0) as outstanding
        FROM parties p
        LEFT JOIN invoices i ON i.party_id = p.id AND i.company_id = ? AND i.status != 'cancelled'
-         AND i.payment_status IN ('unpaid','partial')
        LEFT JOIN (
          SELECT party_id, SUM(amount) as general_paid
          FROM payments
          WHERE company_id = ? AND invoice_id IS NULL
          GROUP BY party_id
        ) gp ON gp.party_id = p.id
+       LEFT JOIN (
+         SELECT party_id, SUM(amount) as goods_return_total
+         FROM goods_returns
+         WHERE company_id = ?
+         GROUP BY party_id
+       ) gr ON gr.party_id = p.id
        WHERE p.company_id = ? AND p.is_active = 1
-       GROUP BY p.id, p.name, p.mobile, p.opening_balance, gp.general_paid
-       HAVING COALESCE(p.opening_balance, 0) + COALESCE(SUM(i.grand_total - i.amount_paid), 0) - COALESCE(gp.general_paid, 0) > 0
+       GROUP BY p.id, p.name, p.mobile, p.opening_balance, gp.general_paid, gr.goods_return_total
+       HAVING COALESCE(p.opening_balance, 0) + COALESCE(SUM(i.grand_total - i.amount_paid), 0) - COALESCE(gp.general_paid, 0) - COALESCE(gr.goods_return_total, 0) > 0
        ORDER BY outstanding DESC`,
-      [req.companyId, req.companyId, req.companyId]
+      [req.companyId, req.companyId, req.companyId, req.companyId]
     );
     res.json({ success: true, outstanding: rows });
   } catch (err) {

@@ -17,7 +17,8 @@ const getOutstandingSummary = async (companyId) => {
        SELECT p.id,
         COALESCE(p.opening_balance, 0)
         + COALESCE(SUM(i.grand_total - i.amount_paid), 0)
-        - COALESCE(gp.general_paid, 0) as outstanding
+        - COALESCE(gp.general_paid, 0)
+        - COALESCE(gr.goods_return_total, 0) as outstanding
        FROM parties p
        LEFT JOIN invoices i ON i.party_id = p.id AND i.company_id = ? AND i.status != 'cancelled'
        LEFT JOIN (
@@ -26,11 +27,17 @@ const getOutstandingSummary = async (companyId) => {
          WHERE company_id = ? AND invoice_id IS NULL
          GROUP BY party_id
        ) gp ON gp.party_id = p.id
+       LEFT JOIN (
+         SELECT party_id, SUM(amount) as goods_return_total
+         FROM goods_returns
+         WHERE company_id = ?
+         GROUP BY party_id
+       ) gr ON gr.party_id = p.id
        WHERE p.company_id = ? AND p.is_active = 1
-       GROUP BY p.id, p.opening_balance, gp.general_paid
+       GROUP BY p.id, p.opening_balance, gp.general_paid, gr.goods_return_total
        HAVING outstanding > 0
      ) x`,
-    [companyId, companyId, companyId]
+    [companyId, companyId, companyId, companyId]
   );
   return rows[0] || { count: 0, total: 0 };
 };
@@ -170,7 +177,9 @@ router.get('/party-ledger/:partyId', async (req, res) => {
 
     const [invoices] = await query(
       `SELECT i.*,
-       COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = i.id), 0) as paid_amount
+       COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = i.id), 0) as paid_amount,
+       COALESCE((SELECT SUM(amount) FROM goods_returns WHERE invoice_id = i.id), 0) as goods_return_total,
+       (i.grand_total - i.amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns WHERE invoice_id = i.id), 0)) as balance
        FROM invoices i
        WHERE i.party_id = ? AND i.company_id = ? AND i.status != 'cancelled'
        ORDER BY i.invoice_date ASC, i.id ASC`,
@@ -203,16 +212,32 @@ router.get('/party-ledger/:partyId', async (req, res) => {
        WHERE party_id = ? AND company_id = ? AND invoice_id IS NULL`,
       [req.params.partyId, req.companyId]
     );
+    const [goodsReturns] = await query(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM goods_returns
+       WHERE party_id = ? AND company_id = ?`,
+      [req.params.partyId, req.companyId]
+    );
+    const [returns] = await query(
+      `SELECT gr.*, i.invoice_no
+       FROM goods_returns gr
+       LEFT JOIN invoices i ON i.id = gr.invoice_id
+       WHERE gr.party_id = ? AND gr.company_id = ?
+       ORDER BY gr.return_date DESC, gr.id DESC`,
+      [req.params.partyId, req.companyId]
+    );
 
     const openingBalance = parseFloat(party[0].opening_balance || 0);
     const invoiceOutstanding = parseFloat(summary[0].invoice_outstanding || 0);
     const generalPaid = parseFloat(generalPayments[0].total || 0);
+    const goodsReturnTotal = parseFloat(goodsReturns[0].total || 0);
     const enrichedSummary = {
       ...summary[0],
       total_paid: parseFloat(summary[0].total_paid || 0) + generalPaid,
       opening_balance: openingBalance,
       general_paid: generalPaid,
-      outstanding: invoiceOutstanding + openingBalance - generalPaid,
+      goods_return_total: goodsReturnTotal,
+      outstanding: invoiceOutstanding + openingBalance - generalPaid - goodsReturnTotal,
     };
 
     res.json({
@@ -220,6 +245,7 @@ router.get('/party-ledger/:partyId', async (req, res) => {
       party: party[0],
       invoices,
       payments: allPayments,
+      returns,
       summary: enrichedSummary,
     });
   } catch (err) {
@@ -267,7 +293,8 @@ router.get('/accountant', async (req, res) => {
         i.total_cgst, i.total_sgst, i.total_igst,
         (i.total_cgst + i.total_sgst + i.total_igst) as total_tax,
         i.grand_total, i.amount_paid,
-        (i.grand_total - i.amount_paid) as balance,
+        COALESCE((SELECT SUM(amount) FROM goods_returns WHERE invoice_id = i.id), 0) as goods_return_total,
+        (i.grand_total - i.amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns WHERE invoice_id = i.id), 0)) as balance,
         i.payment_status,
         p.name as party_name, p.gst_no as party_gst, p.city as party_city, p.state as party_state,
         CASE WHEN p.gst_no IS NOT NULL AND p.gst_no != 'NA' AND p.gst_no != '' THEN 1 ELSE 0 END as has_gstin
@@ -311,7 +338,8 @@ router.get('/accountant', async (req, res) => {
         COALESCE(SUM(total_cgst + total_sgst + total_igst),0) as total_tax,
         COALESCE(SUM(grand_total),0) as total_grand,
         COALESCE(SUM(amount_paid),0) as total_paid,
-        COALESCE(SUM(grand_total - amount_paid),0) as total_outstanding
+        COALESCE(SUM(COALESCE((SELECT SUM(amount) FROM goods_returns gr WHERE gr.invoice_id = i.id),0)),0) as total_returns,
+        COALESCE(SUM(grand_total - amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns gr WHERE gr.invoice_id = i.id),0)),0) as total_outstanding
        FROM invoices i
        WHERE i.company_id = ? AND i.status != 'cancelled'
        ${dateFilter}`,

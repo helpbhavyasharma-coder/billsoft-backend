@@ -69,8 +69,10 @@ router.get('/dashboard/stats', async (req, res) => {
     );
 
     const [unpaid] = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(grand_total - amount_paid), 0) as total
-       FROM invoices WHERE company_id = ? AND payment_status IN ('unpaid','partial') AND status != 'cancelled'`,
+      `SELECT COUNT(*) as count,
+       COALESCE(SUM(grand_total - amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns gr WHERE gr.invoice_id = invoices.id),0)), 0) as total
+       FROM invoices WHERE company_id = ? AND status != 'cancelled'
+       AND (grand_total - amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns gr WHERE gr.invoice_id = invoices.id),0)) > 0`,
       [req.companyId]
     );
 

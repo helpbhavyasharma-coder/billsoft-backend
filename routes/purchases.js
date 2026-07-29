@@ -6,6 +6,14 @@ const { calculatePurchaseTotals } = require('../utils/accountingRules');
 
 router.use(authenticate, attachCompany);
 
+function derivePayment(total, paid) {
+  const amountPaid = Math.min(Math.max(parseFloat(paid || 0), 0), parseFloat(total || 0));
+  let status = 'unpaid';
+  if (amountPaid >= parseFloat(total || 0) && parseFloat(total || 0) > 0) status = 'paid';
+  else if (amountPaid > 0) status = 'partial';
+  return { amountPaid, status };
+}
+
 const insertPurchaseItemsAndStock = async (conn, companyId, purchaseId, purchaseDate, items) => {
   for (const item of items) {
     if (!item.product_id) continue;
@@ -42,10 +50,11 @@ const insertPurchaseItemsAndStock = async (conn, companyId, purchaseId, purchase
 router.get('/', async (req, res) => {
   try {
     const [rows] = await query(
-      `SELECT pb.*, p.name as supplier_name
+      `SELECT pb.*, p.name as supplier_name,
+       (pb.grand_total - COALESCE(pb.amount_paid, 0)) as payable
        FROM purchase_bills pb
        LEFT JOIN parties p ON pb.supplier_id = p.id
-       WHERE pb.company_id = ?
+       WHERE pb.company_id = ? AND COALESCE(pb.status, 'active') != 'cancelled'
        ORDER BY pb.purchase_date DESC, pb.id DESC`,
       [req.companyId]
     );
@@ -56,13 +65,36 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/payables', async (req, res) => {
+  try {
+    const [rows] = await query(
+      `SELECT p.id as supplier_id, p.name as supplier_name, p.mobile,
+       COUNT(pb.id) as total_bills,
+       COALESCE(SUM(pb.grand_total), 0) as total_amount,
+       COALESCE(SUM(pb.amount_paid), 0) as total_paid,
+       COALESCE(SUM(pb.grand_total - COALESCE(pb.amount_paid, 0)), 0) as payable
+       FROM parties p
+       JOIN purchase_bills pb ON pb.supplier_id = p.id AND pb.company_id = ? AND COALESCE(pb.status, 'active') != 'cancelled'
+       WHERE p.company_id = ? AND p.is_active = 1
+       GROUP BY p.id, p.name, p.mobile
+       HAVING payable > 0
+       ORDER BY payable DESC`,
+      [req.companyId, req.companyId]
+    );
+    res.json({ success: true, payables: rows });
+  } catch (err) {
+    console.error('Purchase payables error:', err);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const [rows] = await query(
       `SELECT pb.*, p.name as supplier_name
        FROM purchase_bills pb
        LEFT JOIN parties p ON pb.supplier_id = p.id
-       WHERE pb.id = ? AND pb.company_id = ?`,
+       WHERE pb.id = ? AND pb.company_id = ? AND COALESCE(pb.status, 'active') != 'cancelled'`,
       [req.params.id, req.companyId]
     );
     if (rows.length === 0) return res.status(404).json({ success: false, message: 'Purchase bill not found.' });
@@ -88,7 +120,7 @@ router.post('/', async (req, res) => {
   try {
     await conn.beginTransaction();
 
-    const { supplier_id, bill_no, purchase_date, payment_status, payment_mode, notes, items } = req.body;
+    const { supplier_id, bill_no, purchase_date, payment_mode, notes, items } = req.body;
     if (!purchase_date) {
       await conn.rollback();
       return res.status(400).json({ success: false, message: 'Purchase date is required.' });
@@ -99,11 +131,12 @@ router.post('/', async (req, res) => {
     }
 
     const { normalizedItems, totals } = calculatePurchaseTotals(items);
+    const { amountPaid, status } = derivePayment(totals.grandTotal, req.body.amount_paid);
 
     const [result] = await conn.query(
-      `INSERT INTO purchase_bills (company_id, supplier_id, bill_no, purchase_date, subtotal, total_gst, grand_total, payment_status, payment_mode, notes)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [req.companyId, supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, payment_status || 'unpaid', payment_mode || 'cash', notes || '']
+      `INSERT INTO purchase_bills (company_id, supplier_id, bill_no, purchase_date, subtotal, total_gst, grand_total, amount_paid, payment_status, payment_mode, notes, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [req.companyId, supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, amountPaid, status, payment_mode || 'cash', notes || '', 'active']
     );
 
     const purchaseId = result.insertId;
@@ -124,7 +157,7 @@ router.put('/:id', async (req, res) => {
     await conn.beginTransaction();
 
     const [existing] = await conn.query(
-      'SELECT id FROM purchase_bills WHERE id = ? AND company_id = ?',
+      "SELECT id FROM purchase_bills WHERE id = ? AND company_id = ? AND COALESCE(status, 'active') != 'cancelled'",
       [req.params.id, req.companyId]
     );
     if (existing.length === 0) {
@@ -132,7 +165,7 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Purchase bill not found.' });
     }
 
-    const { supplier_id, bill_no, purchase_date, payment_status, payment_mode, notes, items } = req.body;
+    const { supplier_id, bill_no, purchase_date, payment_mode, notes, items } = req.body;
     if (!purchase_date) {
       await conn.rollback();
       return res.status(400).json({ success: false, message: 'Purchase date is required.' });
@@ -143,10 +176,11 @@ router.put('/:id', async (req, res) => {
     }
 
     const { normalizedItems, totals } = calculatePurchaseTotals(items);
+    const { amountPaid, status } = derivePayment(totals.grandTotal, req.body.amount_paid);
     await conn.query(
-      `UPDATE purchase_bills SET supplier_id=?, bill_no=?, purchase_date=?, subtotal=?, total_gst=?, grand_total=?, payment_status=?, payment_mode=?, notes=?, updated_at=datetime('now')
+      `UPDATE purchase_bills SET supplier_id=?, bill_no=?, purchase_date=?, subtotal=?, total_gst=?, grand_total=?, amount_paid=?, payment_status=?, payment_mode=?, notes=?, updated_at=datetime('now')
        WHERE id=? AND company_id=?`,
-      [supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, payment_status || 'unpaid', payment_mode || 'cash', notes || '', req.params.id, req.companyId]
+      [supplier_id || null, bill_no || '', purchase_date, totals.subtotal, totals.totalGst, totals.grandTotal, amountPaid, status, payment_mode || 'cash', notes || '', req.params.id, req.companyId]
     );
     await conn.query('DELETE FROM purchase_items WHERE purchase_id = ?', [req.params.id]);
     await conn.query(
@@ -170,7 +204,7 @@ router.delete('/:id', async (req, res) => {
     await conn.beginTransaction();
 
     const [existing] = await conn.query(
-      'SELECT id FROM purchase_bills WHERE id = ? AND company_id = ?',
+      "SELECT id FROM purchase_bills WHERE id = ? AND company_id = ? AND COALESCE(status, 'active') != 'cancelled'",
       [req.params.id, req.companyId]
     );
     if (existing.length === 0) {
@@ -182,10 +216,17 @@ router.delete('/:id', async (req, res) => {
       "DELETE FROM stock_movements WHERE company_id = ? AND reference_type = 'purchase' AND reference_id = ?",
       [req.companyId, req.params.id]
     );
-    await conn.query('DELETE FROM purchase_bills WHERE id = ? AND company_id = ?', [req.params.id, req.companyId]);
+    await conn.query(
+      "DELETE FROM ledger_entries WHERE company_id = ? AND reference_type = 'purchase_payment' AND reference_id = ?",
+      [req.companyId, req.params.id]
+    );
+    await conn.query(
+      "UPDATE purchase_bills SET status = 'cancelled', payment_status = 'unpaid', amount_paid = 0, updated_at = datetime('now') WHERE id = ? AND company_id = ?",
+      [req.params.id, req.companyId]
+    );
 
     await conn.commit();
-    res.json({ success: true, message: 'Purchase bill deleted.' });
+    res.json({ success: true, message: 'Purchase bill cancelled.' });
   } catch (err) {
     await conn.rollback();
     console.error('Purchase delete error:', err);

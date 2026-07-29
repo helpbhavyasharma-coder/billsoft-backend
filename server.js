@@ -42,6 +42,7 @@ app.use('/api/products', require('./routes/products'));
 app.use('/api/parties', require('./routes/parties'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/goods-returns', require('./routes/goodsReturns'));
 app.use('/api/purchases', require('./routes/purchases'));
 app.use('/api/stock', require('./routes/stock'));
 app.use('/api/ledgers', require('./routes/ledgers'));

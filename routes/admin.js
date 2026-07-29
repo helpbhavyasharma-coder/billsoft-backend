@@ -81,7 +81,7 @@ router.get('/users/:id', async (req, res) => {
     const [invoiceStats] = companyId ? await query(
       `SELECT COUNT(*) as total, COALESCE(SUM(grand_total),0) as amount,
        COALESCE(SUM(amount_paid),0) as paid,
-       COALESCE(SUM(grand_total - amount_paid),0) as outstanding
+       COALESCE(SUM(grand_total - amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns gr WHERE gr.invoice_id = invoices.id),0)),0) as outstanding
        FROM invoices WHERE company_id = ? AND status != 'cancelled'`,
       [companyId]
     ) : [[{ total: 0, amount: 0, paid: 0, outstanding: 0 }]];
@@ -168,7 +168,7 @@ router.get('/companies', async (req, res) => {
        u.email as user_email,
        (SELECT COUNT(*) FROM invoices i WHERE i.company_id = c.id AND i.status != 'cancelled') as invoice_count,
        (SELECT COALESCE(SUM(grand_total),0) FROM invoices i WHERE i.company_id = c.id AND i.status != 'cancelled') as total_revenue,
-       (SELECT COALESCE(SUM(grand_total - amount_paid),0) FROM invoices i WHERE i.company_id = c.id AND i.payment_status IN ('unpaid','partial') AND i.status != 'cancelled') as outstanding,
+       (SELECT COALESCE(SUM(grand_total - amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns gr WHERE gr.invoice_id = i.id),0)),0) FROM invoices i WHERE i.company_id = c.id AND i.status != 'cancelled') as outstanding,
        (SELECT COUNT(*) FROM parties p WHERE p.company_id = c.id AND p.is_active = 1) as party_count
        FROM companies c
        JOIN users u ON u.id = c.user_id
