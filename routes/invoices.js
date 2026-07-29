@@ -17,6 +17,42 @@ const coalesceSQL = isPostgres
   ? `payment_status = COALESCE($${'{PS}'}, payment_status), amount_paid = COALESCE($${'{AP}'}, amount_paid)`
   : `payment_status=COALESCE(?,payment_status), amount_paid=COALESCE(?,amount_paid)`;
 
+const hydrateInvoiceItemsFromProducts = async (conn, companyId, items) => {
+  const ids = [...new Set((items || []).map((item) => parseInt(item.product_id || 0)).filter(Boolean))];
+  if (ids.length === 0) return items || [];
+
+  const placeholders = ids.map(() => '?').join(',');
+  const [products] = await conn.query(
+    `SELECT id, name, hsn_code, unit, default_rate, gst_rate
+     FROM products WHERE company_id = ? AND id IN (${placeholders})`,
+    [companyId, ...ids]
+  );
+  const byId = new Map(products.map((product) => [parseInt(product.id), product]));
+
+  return (items || []).map((item) => {
+    const product = byId.get(parseInt(item.product_id || 0));
+    if (!product) return item;
+
+    const next = { ...item };
+    if (!String(next.description || '').trim()) next.description = product.name;
+    if (!String(next.hsn_code || '').trim()) next.hsn_code = product.hsn_code || '';
+    if (!String(next.unit || '').trim()) next.unit = product.unit || 'Pcs';
+    if (parseFloat(next.rate || 0) <= 0 && parseFloat(product.default_rate || 0) > 0) next.rate = product.default_rate;
+
+    const itemGst = next.gst_rate;
+    const productGst = product.gst_rate;
+    if (
+      productGst !== undefined &&
+      productGst !== null &&
+      productGst !== '' &&
+      (itemGst === undefined || itemGst === null || itemGst === '' || (parseFloat(itemGst) === 5 && parseFloat(productGst) !== 5))
+    ) {
+      next.gst_rate = productGst;
+    }
+    return next;
+  });
+};
+
 // GET /api/invoices/dashboard/stats  (must be before /:id)
 router.get('/dashboard/stats', async (req, res) => {
   try {
@@ -179,9 +215,10 @@ const calcItems = (items, isInterstate) => {
   let totalCgst = 0, totalSgst = 0, totalIgst = 0;
 
   const processed = items.map((item, idx) => {
+    const gstRate = item.gst_rate === undefined || item.gst_rate === null || item.gst_rate === '' ? 5 : parseFloat(item.gst_rate);
     const totalSale = parseFloat(item.qty || 0) * parseFloat(item.rate || 0);
     const discount = parseFloat(item.discount || 0);
-    const taxable = (totalSale - discount) / (1 + parseFloat(item.gst_rate || 0) / 100);
+    const taxable = (totalSale - discount) / (1 + gstRate / 100);
     const gstAmt = (totalSale - discount) - taxable;
 
     let cgst = 0, sgst = 0, igst = 0;
@@ -205,7 +242,7 @@ const calcItems = (items, isInterstate) => {
       total_sale: parseFloat(totalSale.toFixed(2)),
       discount: parseFloat(discount.toFixed(2)),
       taxable_amount: parseFloat(taxable.toFixed(2)),
-      gst_rate: parseFloat(item.gst_rate || 5),
+      gst_rate: gstRate,
       cgst: parseFloat(cgst.toFixed(2)),
       sgst: parseFloat(sgst.toFixed(2)),
       igst: parseFloat(igst.toFixed(2)),
@@ -285,7 +322,8 @@ router.post('/', async (req, res) => {
     }
 
     const isInterstate = supply_type === 'interstate';
-    const validItems = items.filter(i => i.description);
+    const hydratedItems = await hydrateInvoiceItemsFromProducts(conn, req.companyId, items);
+    const validItems = hydratedItems.filter(i => i.description);
     const { processed, totals } = calcItems(validItems, isInterstate);
 
     const [invoiceResult] = await conn.query(
@@ -364,7 +402,8 @@ router.put('/:id', async (req, res) => {
     const { party_id, invoice_date, due_date, invoice_type, supply_type, notes, terms, items, status, payment_status, amount_paid } = req.body;
 
     const isInterstate = supply_type === 'interstate';
-    const validItems = (items || []).filter(i => i.description);
+    const hydratedItems = await hydrateInvoiceItemsFromProducts(conn, req.companyId, items || []);
+    const validItems = hydratedItems.filter(i => i.description);
     const { processed, totals } = calcItems(validItems, isInterstate);
     const paid = amount_paid !== undefined && amount_paid !== null ? parseFloat(amount_paid || 0) : parseFloat(existing[0].amount_paid || 0);
     if (paid > totals.grandTotal) {
