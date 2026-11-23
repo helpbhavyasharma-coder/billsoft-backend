@@ -328,21 +328,36 @@ router.post('/', async (req, res) => {
     const validItems = hydratedItems.filter(i => i.description);
     const { processed, totals } = calcItems(validItems, isInterstate);
 
+    const [partyRows] = await conn.query('SELECT name FROM parties WHERE id = ? AND company_id = ?', [party_id, req.companyId]);
+    const isCashSale = (partyRows[0] && partyRows[0].name.trim().toLowerCase() === 'cash') || Boolean(req.body.is_cash_sale);
+
     const [invoiceResult] = await conn.query(
       `INSERT INTO invoices (company_id, party_id, invoice_no, invoice_date, due_date,
        invoice_type, supply_type, subtotal, total_discount, taxable_amount,
-       total_cgst, total_sgst, total_igst, round_off, grand_total, notes, terms, status)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft')`,
+       total_cgst, total_sgst, total_igst, round_off, grand_total, amount_paid, payment_status, notes, terms, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         req.companyId, party_id, finalInvoiceNo, invoice_date, due_date || null,
         invoice_type || 'GST', supply_type || 'intrastate',
         totals.subtotal, totals.totalDiscount, totals.taxableAmount,
         totals.totalCgst, totals.totalSgst, totals.totalIgst,
-        totals.roundOff, totals.grandTotal, notes || '', terms || '',
+        totals.roundOff, totals.grandTotal,
+        isCashSale ? totals.grandTotal : 0,
+        isCashSale ? 'paid' : 'unpaid',
+        notes || '', terms || '',
+        isCashSale ? 'paid' : 'draft',
       ]
     );
 
     const invoiceId = invoiceResult.insertId;
+
+    if (isCashSale) {
+      await conn.query(
+        `INSERT INTO payments (company_id, party_id, invoice_id, amount, payment_date, payment_type, payment_mode, reference_no, notes)
+         VALUES (?, ?, ?, ?, ?, 'invoice', 'cash', '', 'Cash Sale (Counter)')`,
+        [req.companyId, party_id, invoiceId, totals.grandTotal, invoice_date]
+      );
+    }
 
     for (const item of processed) {
       await conn.query(

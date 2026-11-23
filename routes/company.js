@@ -125,6 +125,14 @@ router.post('/', authenticate, upload.single('logo'), async (req, res) => {
         ]
       );
 
+      const newCompanyId = result.insertId;
+      try {
+        await query(
+          'INSERT INTO parties (company_id, name, address, city, state, mobile, email, gst_no, party_type, opening_balance, is_active) VALUES (?, "Cash", "Counter Sale", "", "", "", "", "NA", "customer", 0.00, 1)',
+          [newCompanyId]
+        );
+      } catch (e) {}
+
       const [created] = await query('SELECT * FROM companies WHERE id = ?', [result.insertId]);
       return res.status(201).json({ success: true, message: 'Company profile created.', company: created[0] });
     }

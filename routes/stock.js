@@ -34,7 +34,7 @@ async function syncStockMovements(companyId) {
       `SELECT pb.id, pb.company_id, pb.purchase_date, pb.bill_no, pi.product_id, pi.qty, pi.short_qty, pi.damaged_qty, pi.expired_qty, pi.accepted_qty
        FROM purchase_items pi
        JOIN purchase_bills pb ON pb.id = pi.purchase_id
-       WHERE pb.company_id = ? AND pi.product_id IS NOT NULL`,
+       WHERE pb.company_id = ? AND COALESCE(pb.status, 'active') != 'cancelled' AND pi.product_id IS NOT NULL`,
       [companyId]
     );
     for (const row of purchaseRows) {

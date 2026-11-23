@@ -7,8 +7,21 @@ const { normalizeGstin, isValidGstinOrNA } = require('../utils/validators');
 router.use(authenticate, attachCompany);
 
 // GET /api/parties
+async function ensureCashParty(companyId) {
+  try {
+    const [existing] = await query('SELECT id FROM parties WHERE company_id = ? AND LOWER(TRIM(name)) = "cash" LIMIT 1', [companyId]);
+    if (existing.length === 0) {
+      await query(
+        'INSERT INTO parties (company_id, name, address, city, state, mobile, email, gst_no, party_type, opening_balance, is_active) VALUES (?, "Cash", "Counter Sale", "", "", "", "", "NA", "customer", 0.00, 1)',
+        [companyId]
+      );
+    }
+  } catch (e) {}
+}
+
 router.get('/', async (req, res) => {
   try {
+    await ensureCashParty(req.companyId);
     const { search } = req.query;
     let sql = 'SELECT * FROM parties WHERE company_id = ? AND is_active = 1';
     const params = [req.companyId];

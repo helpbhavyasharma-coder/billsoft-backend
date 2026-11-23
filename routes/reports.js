@@ -208,7 +208,7 @@ router.get('/party-ledger/:partyId', async (req, res) => {
        (i.grand_total - i.amount_paid - COALESCE((SELECT SUM(amount) FROM goods_returns WHERE invoice_id = i.id), 0)) as balance
        FROM invoices i
        WHERE i.party_id = ? AND i.company_id = ? AND i.status != 'cancelled'
-       ORDER BY i.invoice_date ASC, i.id ASC`,
+       ORDER BY i.invoice_date DESC, i.id DESC`,
       [req.params.partyId, req.companyId]
     );
 
